@@ -37,6 +37,7 @@ class BrokerConfig:
     listen_host: str
     listen_port: int
     token_file: Path
+    operator_token_file: Path
     idle_seconds: float = 600.0
     max_running_jobs: int = 1
     max_build_jobs: int = 2
@@ -75,6 +76,7 @@ def load_broker_config(path: Path) -> BrokerConfig:
         listen_host=str(data["listen_host"]),
         listen_port=int(data.get("listen_port", 8741)),
         token_file=Path(data.get("token_file", str(BROKER_DIR / "token"))),
+        operator_token_file=Path(data.get("operator_token_file", str(BROKER_DIR / "operator-token"))),
         idle_seconds=float(data.get("simulator_idle_seconds", 600)),
         max_running_jobs=int(data.get("max_running_jobs", 1)),
         max_build_jobs=int(data.get("max_build_jobs", 2)),

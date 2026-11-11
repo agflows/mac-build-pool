@@ -22,13 +22,19 @@ import shutil
 import subprocess
 
 from config import DEVELOPER_DIR, LIBRARY_ROOT, load_worker_config
-from containment import TEMP_ROOT, directory_size, install_import_path, run_contained, worker_child_env
+from containment import LOG_CAP, TEMP_ROOT, directory_size, install_import_path, run_contained, worker_child_env
 from memory import boot_needs_approval, sample_system
 from policy import PolicyError, check_device, require_id, require_scheme, require_under
 from tarsafe import extract_source
 
 install_import_path()
 CONFIG_PATH = LIBRARY_ROOT / "worker.json"
+
+
+class CommandFailed(RuntimeError):
+    def __init__(self, message: str, exit_code: int) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
 BUNDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$")
 
 
@@ -133,10 +139,8 @@ def build(request: dict, cfg, commands: Commands) -> dict:
         "CODE_SIGN_IDENTITY=-",
     ]
     completed = commands.run(argv, timeout=900)
-    tail = _tail(completed)
-    if completed.returncode != 0:
-        raise RuntimeError(tail or "build failed")
-    return {"ok": True, "log": tail}
+    tail = _check(completed, "build failed")
+    return {"ok": True, "log": tail, "exitCode": 0}
 
 
 def launch(request: dict, cfg, commands: Commands, memory) -> dict:
@@ -147,12 +151,9 @@ def launch(request: dict, cfg, commands: Commands, memory) -> dict:
     bundle = _bundle_id(app)
     ensure_booted(device, bool(request.get("approved")), cfg, commands, memory)
     install = commands.run([commands.xcrun, "simctl", "install", device, str(app)], timeout=180)
-    if install.returncode != 0:
-        raise RuntimeError(_tail(install) or "install failed")
+    _check(install, "install failed")
     launched = commands.run([commands.xcrun, "simctl", "launch", device, bundle], timeout=60)
-    if launched.returncode != 0:
-        raise RuntimeError(_tail(launched) or "launch failed")
-    return {"ok": True, "log": _tail(launched), "bundle_id": bundle}
+    return {"ok": True, "log": _check(launched, "launch failed"), "bundle_id": bundle, "exitCode": 0}
 
 
 def screenshot(request: dict, cfg, commands: Commands, memory) -> dict:
@@ -161,8 +162,9 @@ def screenshot(request: dict, cfg, commands: Commands, memory) -> dict:
     artifact_id = require_id(request.get("artifact_id") or _fallback_id(request), "artifact")
     path = require_under(cfg.artifact_root / f"{artifact_id}.png", cfg.artifact_root)
     completed = commands.run([commands.xcrun, "simctl", "io", device, "screenshot", str(path)], timeout=60)
-    if completed.returncode != 0 or not path.is_file():
-        raise RuntimeError(_tail(completed) or "screenshot failed")
+    _check(completed, "screenshot failed")
+    if path.is_symlink() or not path.is_file():
+        raise CommandFailed("screenshot failed", completed.returncode or 1)
     return {"ok": True, "log": "screenshot", "artifact_id": artifact_id, "artifact_path": str(path)}
 
 
@@ -188,10 +190,7 @@ def uitest(request: dict, cfg, commands: Commands, memory) -> dict:
         "1",
     ]
     completed = commands.run(argv, timeout=900)
-    tail = _tail(completed)
-    if completed.returncode != 0:
-        raise RuntimeError(tail or "ui test failed")
-    return {"ok": True, "log": tail}
+    return {"ok": True, "log": _check(completed, "ui test failed"), "exitCode": 0}
 
 
 def logs(request: dict, cfg, commands: Commands) -> dict:
@@ -200,17 +199,14 @@ def logs(request: dict, cfg, commands: Commands) -> dict:
         [commands.xcrun, "simctl", "spawn", device, "log", "show", "--style", "compact", "--last", "2m"],
         timeout=60,
     )
-    if completed.returncode != 0:
-        raise RuntimeError(_tail(completed) or "log collection failed")
-    return {"ok": True, "log": _tail(completed)}
+    return {"ok": True, "log": _check(completed, "log collection failed"), "exitCode": 0}
 
 
 def reset(request: dict, cfg, commands: Commands) -> dict:
     device = _device(request, cfg)
     shutdown({"op": "shutdown", "device_id": device}, cfg, commands)
     erased = commands.run([commands.xcrun, "simctl", "erase", device], timeout=180)
-    if erased.returncode != 0:
-        raise RuntimeError(_tail(erased) or "erase failed")
+    _check(erased, "erase failed")
     revision_id = request.get("revision_id")
     if revision_id:
         revision = require_under(cfg.workspace_root / require_id(revision_id, "revision"), cfg.workspace_root)
@@ -223,16 +219,14 @@ def shutdown(request: dict, cfg, commands: Commands) -> dict:
     device = _device(request, cfg)
     if is_booted(request, cfg, commands):
         completed = commands.run([commands.xcrun, "simctl", "shutdown", device], timeout=60)
-        if completed.returncode != 0:
-            raise RuntimeError(_tail(completed) or "shutdown failed")
+        _check(completed, "shutdown failed")
     return {"ok": True, "log": "shutdown"}
 
 
 def is_booted(request: dict, cfg, commands: Commands) -> bool:
     device = _device(request, cfg)
     completed = commands.run([commands.xcrun, "simctl", "list", "devices", "-j"], timeout=30)
-    if completed.returncode != 0:
-        raise RuntimeError("simctl list failed")
+    _check(completed, "simctl list failed")
     listing = json.loads(completed.stdout.decode("utf-8"))
     for devices in listing.get("devices", {}).values():
         for item in devices:
@@ -248,10 +242,10 @@ def ensure_booted(device: str, approved: bool, cfg, commands: Commands, memory) 
     sample = memory()
     if boot_needs_approval(None, sample, approved):
         raise PolicyError("approval_required", "Simulator boot is waiting for approval.")
-    commands.run([commands.xcrun, "simctl", "boot", device], timeout=180)
+    _check(commands.run([commands.xcrun, "simctl", "boot", device], timeout=180), "boot failed")
     status = commands.run([commands.xcrun, "simctl", "bootstatus", device, "-b"], timeout=180)
     if not is_booted(probe, cfg, commands):
-        raise RuntimeError(_tail(status) or "boot failed")
+        raise CommandFailed(_tail(status) or "boot failed", int(status.returncode or 1))
 
 
 def _device(request: dict, cfg) -> str:
@@ -280,8 +274,7 @@ def _scheme(request: dict, project: Path, commands: Commands) -> str:
     if requested:
         requested = require_scheme(requested)
     completed = commands.run([commands.xcodebuild, "-project", str(project), "-list", "-json"], timeout=60)
-    if completed.returncode != 0:
-        raise RuntimeError("xcodebuild -list failed")
+    _check(completed, "xcodebuild -list failed")
     listing = json.loads(completed.stdout.decode("utf-8"))
     schemes = list(listing.get("project", {}).get("schemes", []))
     if requested:
@@ -319,6 +312,18 @@ def _fallback_id(request: dict) -> str:
     if isinstance(job_id, str):
         return require_id(job_id, "job")
     raise PolicyError("invalid_id", "artifact id is missing")
+
+
+def _check(completed: subprocess.CompletedProcess, label: str) -> str:
+    tail = _tail(completed)
+    if completed.returncode != 0:
+        raise CommandFailed(tail or label, int(completed.returncode or 1))
+    return tail
+
+
+def _failure(message: str, error: str, exit_code: int) -> None:
+    payload = {"ok": False, "error": error, "message": message[-LOG_CAP:], "exitCode": exit_code}
+    sys.stderr.write(json.dumps(payload))
 
 
 def _tail(completed: subprocess.CompletedProcess) -> str:
@@ -362,13 +367,16 @@ def main() -> int:
             ),
         )
     except PolicyError as exc:
-        sys.stderr.write(exc.message + "\n")
+        _failure(exc.message, exc.code, 2)
         return 2
+    except CommandFailed as exc:
+        _failure(str(exc) or "command failed", "command_failed", exc.exit_code)
+        return 1
     except FileNotFoundError as exc:
-        sys.stderr.write("FileNotFoundError " + str(exc.filename or "") + "\n")
+        _failure("FileNotFoundError " + str(exc.filename or ""), "FileNotFoundError", 1)
         return 1
     except Exception as exc:
-        sys.stderr.write(exc.__class__.__name__ + "\n")
+        _failure(str(exc) or exc.__class__.__name__, exc.__class__.__name__, 1)
         return 1
     sys.stdout.write(json.dumps(result))
     return 0

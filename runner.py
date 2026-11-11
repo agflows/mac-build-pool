@@ -13,10 +13,17 @@ import signal
 import subprocess
 import time
 
-from containment import BROKER_ENV, BUILD_TIMEOUT, DEFAULT_TIMEOUT, STDOUT_CAP, SUDO_ARGV, TEST_TIMEOUT
+from containment import BROKER_ENV, BUILD_TIMEOUT, DEFAULT_TIMEOUT, LOG_CAP, STDOUT_CAP, SUDO_ARGV, TEST_TIMEOUT
 from policy import PolicyError, check_device
 
 IOSAGENT_USER = "iosagent"
+
+
+class WorkerFailure(RuntimeError):
+    def __init__(self, message: str, exit_code: int | None = None) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.log = message[-LOG_CAP:]
 
 
 class SudoRunner:
@@ -68,12 +75,26 @@ class SudoRunner:
         )
         stdout, stderr = _read_capped(process, json.dumps(payload).encode(), timeout)
         if process.returncode != 0:
-            detail = stderr.decode("utf-8", "replace")[-300:]
-            raise RuntimeError(detail or f"worker exited {process.returncode}")
+            raise _failure_from_stderr(stderr, process.returncode)
         try:
             return json.loads(stdout.decode("utf-8"))
         except json.JSONDecodeError as exc:
-            raise RuntimeError("worker returned no JSON") from exc
+            raise WorkerFailure("worker returned no JSON", process.returncode) from exc
+
+
+def _failure_from_stderr(stderr: bytes, returncode: int) -> WorkerFailure:
+    text = stderr.decode("utf-8", "replace").strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        message = str(payload.get("message") or payload.get("error") or "worker failed")
+        exit_code = payload.get("exitCode")
+        if not isinstance(exit_code, int):
+            exit_code = returncode
+        return WorkerFailure(message, exit_code)
+    return WorkerFailure(text[-LOG_CAP:] or f"worker exited {returncode}", returncode)
 
 
 def _read_capped(process: subprocess.Popen, payload: bytes, timeout: int) -> tuple[bytes, bytes]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,8 @@ from containment import (
     DISK_BUDGET,
     MEMORY_LIMIT,
     SUDO_ARGV,
+    Tail,
+    directory_size,
     launch_path_problems,
     pin_sys_path,
     worker_child_env,
@@ -47,6 +50,34 @@ class ContainmentTest(unittest.TestCase):
         self.assertNotIn("/tmp/evil", pinned)
         self.assertNotIn("", pinned)
         self.assertIn("/usr/lib", pinned)
+
+    def test_sparse_files_count_allocated_bytes_once(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "work"
+        root.mkdir()
+        sparse = root / "v8.data"
+        fd = os.open(sparse, os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            os.ftruncate(fd, 32 * 1024 * 1024 * 1024)
+        finally:
+            os.close(fd)
+        info = sparse.stat()
+        if info.st_blocks * 512 > 1024 * 1024:
+            sparse.unlink()
+            self.skipTest("this filesystem allocated the sparse file")
+        os.link(sparse, root / "v8-link.data")
+        outside = Path(tmp.name) / "outside.bin"
+        outside.write_bytes(b"canary-not-counted")
+        (root / "escape").symlink_to(outside)
+        self.assertGreater(info.st_size, DISK_BUDGET)
+        self.assertLess(directory_size([root]), 1024 * 1024)
+
+    def test_command_output_keeps_the_tail(self) -> None:
+        tail = Tail(8)
+        tail.extend(b"abcdefghij")
+        tail.extend(b"KL")
+        self.assertEqual(bytes(tail), b"efghijKL")
 
     def test_child_env_does_not_forward_pythonpath(self) -> None:
         env = worker_child_env("/Applications/Xcode.app/Contents/Developer")

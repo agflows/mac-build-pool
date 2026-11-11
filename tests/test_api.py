@@ -22,6 +22,7 @@ from scheduler import Scheduler
 WORKER = "3C8BB98E-6383-446B-AF87-1E1282762A13"
 PERSONAL = "4D015300-4BAE-4E6D-89C9-BC4D454E4216"
 TOKEN = "test-token"
+OPERATOR = "operator-token-value"
 
 
 class Memory:
@@ -66,7 +67,7 @@ class ApiTest(unittest.TestCase):
             artifact_root=Path(self.tmp.name) / "artifacts",
             idle_seconds=600,
         )
-        app = App(self.scheduler, TOKEN, spool, allow_loopback=True, max_upload_bytes=1024 * 1024)
+        app = App(self.scheduler, TOKEN, OPERATOR, spool, allow_loopback=True, max_upload_bytes=1024 * 1024)
         self.httpd = serve(app, "127.0.0.1", 0)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -110,8 +111,19 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(json.loads(payload)["error"], "personal_simulator")
         self.assertNotIn(b"/Users", payload)
 
+    def _lease(self) -> str:
+        status, payload = self._request("POST", "/v1/leases", b"{}")
+        self.assertEqual(status, 201)
+        return json.loads(payload)["leaseId"]
+
+    def test_second_lease_is_rejected(self) -> None:
+        self._lease()
+        status, payload = self._request("POST", "/v1/leases", b"{}")
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(payload)["error"], "session_busy")
+
     def test_third_build_returns_queue_full(self) -> None:
-        body = json.dumps({"revisionId": "rev0001"}).encode()
+        body = json.dumps({"revisionId": "rev0001", "leaseId": self._lease()}).encode()
         self.assertEqual(self._request("POST", "/v1/builds", body)[0], 202)
         self.assertEqual(self._request("POST", "/v1/builds", body)[0], 202)
         status, payload = self._request("POST", "/v1/builds", body)
@@ -128,13 +140,17 @@ class ApiTest(unittest.TestCase):
 
     def test_approval_then_launch_uses_the_worker_device(self) -> None:
         self.scheduler.revisions["rev0001"] = {"status": "ready", "archive": ""}
-        status, payload = self._request("POST", "/v1/sessions", json.dumps({"revisionId": "rev0001"}).encode())
+        body = json.dumps({"revisionId": "rev0001", "leaseId": self._lease()}).encode()
+        status, payload = self._request("POST", "/v1/sessions", body)
         self.assertEqual(status, 202)
         job_id = json.loads(payload)["jobId"]
         self.scheduler.step()
         status, payload = self._request("GET", "/v1/jobs/" + job_id)
         self.assertEqual(json.loads(payload)["status"], "waiting_for_approval")
-        status, _payload = self._request("POST", "/v1/jobs/" + job_id + "/approve", b"{}")
+        status, payload = self._request("POST", "/v1/jobs/" + job_id + "/approve", b"{}")
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(payload)["error"], "operator_required")
+        status, _payload = self._request("POST", "/v1/jobs/" + job_id + "/approve", b"{}", token=OPERATOR)
         self.assertEqual(status, 200)
         self.scheduler.step()
         for _ in range(100):

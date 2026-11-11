@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from containment import DISK_BUDGET, LOG_CAP
+from containment import DISK_BUDGET, LOG_CAP, MAX_ARTIFACT_BYTES, copy_regular_file
+from runner import WorkerFailure
 from memory import MemorySample, boot_needs_approval, build_needs_approval
 from policy import PolicyError, check_device, require_id, require_scheme, require_under
 
@@ -39,9 +40,12 @@ class Job:
     scheme: Optional[str] = None
     artifact_id: Optional[str] = None
     archive: Optional[str] = None
+    lease_id: Optional[str] = None
+    boot_after: bool = True
     approved: bool = False
     followup_id: Optional[str] = None
     error: Optional[str] = None
+    exit_code: Optional[int] = None
     log: str = ""
     result: dict = field(default_factory=dict)
 
@@ -57,6 +61,7 @@ class Scheduler:
         default_device: str,
         clock: Clock,
         artifact_root: Path,
+        export_root: Optional[Path] = None,
         max_running: int = 1,
         max_build_jobs: int = 2,
         max_pending_jobs: int = 8,
@@ -71,6 +76,8 @@ class Scheduler:
         self.default_device = check_device(default_device, self.allowlist, self.denylist)
         self.clock = clock
         self.artifact_root = artifact_root
+        self.export_root = export_root or (artifact_root.parent / "export")
+        self.lease: Optional[dict] = None
         self.max_running = max_running
         self.max_build_jobs = max_build_jobs
         self.max_pending_jobs = max_pending_jobs
@@ -105,17 +112,48 @@ class Scheduler:
         self._wake.set()
         return job
 
-    def submit_build(self, revision_id: str, scheme: Optional[str]) -> Job:
+    def acquire_lease(self) -> str:
+        with self._lock:
+            if self.lease and self.lease.get("status") == "active":
+                raise PolicyError("session_busy", "Another session holds the simulator.")
+            lease_id = _new_id()
+            self.lease = {"id": lease_id, "status": "active"}
+            return lease_id
+
+    def release_lease(self, lease_id: str) -> None:
+        require_id(lease_id, "lease")
+        with self._lock:
+            if self.lease is None or self.lease.get("id") != lease_id:
+                raise KeyError(lease_id)
+            self.lease["status"] = "released"
+            for job in self.jobs.values():
+                if job.lease_id == lease_id and job.status in ("queued", "waiting_for_approval"):
+                    job.status = "failed"
+                    job.error = "session released"
+        self._wake.set()
+
+    def submit_build(self, revision_id: str, scheme: Optional[str], lease_id: str, boot_after: bool = True) -> Job:
         require_id(revision_id, "revision")
         if scheme is not None:
             require_scheme(scheme)
+        if not isinstance(boot_after, bool):
+            raise PolicyError("invalid_body", "bootSimulator must be a boolean.")
         with self._lock:
-            job = Job(id=_new_id(), kind="build", revision_id=revision_id, scheme=scheme, device_id=self.default_device)
+            self._require_lease_locked(lease_id)
+            job = Job(
+                id=_new_id(),
+                kind="build",
+                revision_id=revision_id,
+                scheme=scheme,
+                device_id=self.default_device,
+                lease_id=lease_id,
+                boot_after=boot_after,
+            )
             self._put_locked(job)
         self._wake.set()
         return job
 
-    def submit_launch(self, revision_id: str, device_id: Optional[str]) -> tuple[Job, str]:
+    def submit_launch(self, revision_id: str, device_id: Optional[str], lease_id: str) -> tuple[Job, str]:
         device = self._device(device_id)
         session_id = _new_id()
         job = Job(
@@ -124,10 +162,17 @@ class Scheduler:
             revision_id=require_id(revision_id, "revision"),
             session_id=session_id,
             device_id=device,
+            lease_id=lease_id,
         )
         with self._lock:
+            self._require_lease_locked(lease_id)
             self._put_locked(job)
-            self.sessions[session_id] = {"job_id": job.id, "device_id": device, "revision_id": revision_id}
+            self.sessions[session_id] = {
+                "job_id": job.id,
+                "device_id": device,
+                "revision_id": revision_id,
+                "lease_id": lease_id,
+            }
         self._wake.set()
         return job, session_id
 
@@ -139,25 +184,34 @@ class Scheduler:
             session_id=session_id,
             device_id=session["device_id"],
             revision_id=session["revision_id"],
+            lease_id=session["lease_id"],
         )
         job.artifact_id = job.id
+        with self._lock:
+            self._require_lease_locked(session["lease_id"])
         return self._enqueue(job)
 
-    def submit_uitest(self, revision_id: str, scheme: Optional[str], device_id: Optional[str]) -> Job:
+    def submit_uitest(self, revision_id: str, scheme: Optional[str], device_id: Optional[str], lease_id: str) -> Job:
         if scheme is not None:
             require_scheme(scheme)
+        device = self._device(device_id)
+        with self._lock:
+            self._require_lease_locked(lease_id)
         return self._enqueue(
             Job(
                 id=_new_id(),
                 kind="uitest",
                 revision_id=require_id(revision_id, "revision"),
                 scheme=scheme,
-                device_id=self._device(device_id),
+                device_id=device,
+                lease_id=lease_id,
             )
         )
 
     def submit_logs(self, session_id: str) -> Job:
         session = self._session(session_id)
+        with self._lock:
+            self._require_lease_locked(session["lease_id"])
         return self._enqueue(
             Job(
                 id=_new_id(),
@@ -165,14 +219,18 @@ class Scheduler:
                 session_id=session_id,
                 device_id=session["device_id"],
                 revision_id=session["revision_id"],
+                lease_id=session["lease_id"],
             )
         )
 
-    def submit_reset(self, revision_id: Optional[str], device_id: Optional[str]) -> Job:
+    def submit_reset(self, revision_id: Optional[str], device_id: Optional[str], lease_id: str) -> Job:
         if revision_id is not None:
             require_id(revision_id, "revision")
+        device = self._device(device_id)
+        with self._lock:
+            self._require_lease_locked(lease_id)
         return self._enqueue(
-            Job(id=_new_id(), kind="reset", revision_id=revision_id, device_id=self._device(device_id))
+            Job(id=_new_id(), kind="reset", revision_id=revision_id, device_id=device, lease_id=lease_id)
         )
 
     def approve(self, job_id: str) -> Job:
@@ -247,8 +305,20 @@ class Scheduler:
     def _admit(self, job: Job, sample: MemorySample, previous: Optional[MemorySample]) -> str:
         if job.kind in ("build", "launch", "uitest"):
             revision = self.revisions.get(job.revision_id or "")
-            if revision is None or revision["status"] != "ready":
+            if revision is None:
+                job.status = "failed"
+                job.error = "unknown revision"
                 return "skip"
+            if revision["status"] == "failed":
+                job.status = "failed"
+                job.error = "revision failed"
+                return "skip"
+            if revision["status"] != "ready":
+                return "skip"
+        if job.lease_id and not self._lease_active(job.lease_id):
+            job.status = "failed"
+            job.error = "session released"
+            return "skip"
         if job.kind in ("screenshot", "logs"):
             ready = self._session_ready(job.session_id)
             if ready == "missing":
@@ -302,17 +372,21 @@ class Scheduler:
                 current = self.jobs[job_id]
                 current.result = result if isinstance(result, dict) else {"ok": True}
                 current.log = log
+                current.exit_code = result.get("exitCode") if isinstance(result, dict) else 0
                 self._register_artifact(current)
                 if current.kind == "ingest" and current.revision_id in self.revisions:
                     self.revisions[current.revision_id]["status"] = "ready"
-                if current.kind == "build" and current.device_id:
+                if current.kind == "build" and current.device_id and current.boot_after:
                     current.followup_id = self._queue_restart_locked(current.device_id)
                 current.status = "succeeded"
         except Exception as exc:
             with self._lock:
                 current = self.jobs[job_id]
                 current.status = "failed"
-                detail = str(exc).strip().splitlines()
+                message = exc.log if isinstance(exc, WorkerFailure) else str(exc)
+                current.log = message[-LOG_CAP:]
+                current.exit_code = exc.exit_code if isinstance(exc, WorkerFailure) else None
+                detail = message.strip().splitlines()
                 current.error = (detail[-1][:300] if detail else exc.__class__.__name__)
                 if current.kind == "ingest" and current.revision_id in self.revisions:
                     self.revisions[current.revision_id]["status"] = "failed"
@@ -328,12 +402,17 @@ class Scheduler:
         if not isinstance(artifact, str) or not isinstance(path, str):
             return
         require_id(artifact, "artifact")
-        stored = require_under(Path(path), self.artifact_root)
-        self.artifacts[artifact] = str(stored)
+        suffix = Path(path).suffix.lower()
+        if suffix not in {".png", ".jpg", ".txt", ".log"}:
+            suffix = ".bin"
+        exported = copy_regular_file(Path(path), self.artifact_root, self.export_root, artifact + suffix, MAX_ARTIFACT_BYTES)
+        self.artifacts[artifact] = str(exported)
         job.artifact_id = artifact
 
     def _idle_devices_locked(self) -> list[str]:
         if self.running_ids:
+            return []
+        if self.lease and self.lease.get("status") == "active":
             return []
         if self.clock() - self._last_busy < self.idle_seconds:
             return []
@@ -394,6 +473,14 @@ class Scheduler:
                 return "unknown"
             return self.last_sample.pressure_name
 
+    def _require_lease_locked(self, lease_id: str) -> None:
+        require_id(lease_id, "lease")
+        if not self._lease_active(lease_id):
+            raise PolicyError("session_busy", "That session does not hold the simulator.")
+
+    def _lease_active(self, lease_id: str) -> bool:
+        return bool(self.lease and self.lease.get("id") == lease_id and self.lease.get("status") == "active")
+
     def _device(self, device_id: Optional[str]) -> str:
         if device_id is None:
             return self.default_device
@@ -424,9 +511,12 @@ class Scheduler:
             scheme=job.scheme,
             artifact_id=job.artifact_id,
             archive=job.archive,
+            lease_id=job.lease_id,
+            boot_after=job.boot_after,
             approved=job.approved,
             followup_id=job.followup_id,
             error=job.error,
+            exit_code=job.exit_code,
             log=job.log,
             result=dict(job.result),
         )

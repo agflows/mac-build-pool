@@ -9,8 +9,10 @@ from __future__ import annotations
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 LIBRARY = Path("/Library/ios-worker")
@@ -45,12 +47,20 @@ def main() -> int:
         sys.stderr.write("install_system.py must run as root\n")
         return 1
     source = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
+    scratch = _private_dir()
+    try:
+        return _install(source, scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _install(source: Path, scratch: Path) -> int:
     _ensure_user()
     _install_code(source)
     _install_helper(source)
-    _probe_jetsam()
+    _probe_jetsam(scratch)
     _install_data()
-    _install_sudoers(source)
+    _install_sudoers(source, scratch)
     _probe_launch()
     _install_daemon(source)
     _remove_shared_copy()
@@ -89,8 +99,16 @@ def main() -> int:
     print("installed /Library/ios-worker as root")
     print("broker account: iosbroker (not admin, home mode 700)")
     print(f"token file: {BROKER_DIR / 'token'} (mode 600, value not printed)")
+    print(f"operator token file: {BROKER_DIR / 'operator-token'} (mode 600, value not printed)")
     print("launchd: system/com.iosworker.broker UserName=iosbroker")
     return 0
+
+
+def _private_dir() -> Path:
+    path = Path(tempfile.mkdtemp(prefix="ios-worker-"))
+    os.chown(path, 0, 0)
+    path.chmod(0o700)
+    return path
 
 
 def _ensure_user() -> None:
@@ -210,9 +228,9 @@ def _install_helper(source: Path) -> None:
     raise SystemExit(last or "worker_cap compile failed")
 
 
-def _probe_jetsam() -> None:
+def _probe_jetsam(scratch: Path) -> None:
     """Report which limits a root process can set and whether a child inherits them."""
-    probe = Path("/tmp/ios-worker-jetsam-probe.py")
+    probe = scratch / "jetsam-probe.py"
     probe.write_text(
         "import ctypes, os, resource\n"
         "print('euid', os.geteuid(), flush=True)\n"
@@ -283,8 +301,6 @@ def _probe_launch() -> None:
     stdout = completed.stdout.strip().replace("\n", "")[:240]
     stderr = completed.stderr.strip().replace("\n", " ")[-240:]
     line = f"worker_cap rc={completed.returncode} out={stdout} err={stderr}"
-    Path("/tmp/ios-worker-status.txt").write_text(line + "\n")
-    Path("/tmp/ios-worker-status.txt").chmod(0o644)
     print(line)
     if completed.returncode != 0 or '"booted"' not in completed.stdout:
         raise SystemExit("worker launch path failed")
@@ -302,11 +318,16 @@ def _install_data() -> None:
         os.chown(path, uid, 20)
         path.chmod(0o700)
         _acl(path, acl)
-    token = BROKER_DIR / "token"
-    if not token.exists():
-        token.write_text(secrets.token_hex(32) + "\n")
-    os.chown(token, uid, 20)
-    token.chmod(0o600)
+    export = DATA / "export"
+    export.mkdir(exist_ok=True)
+    os.chown(export, uid, 20)
+    export.chmod(0o700)
+    subprocess.run(["/bin/chmod", "-N", str(export)], check=False)
+    token = _secret_file(BROKER_DIR / "token", uid)
+    operator = _secret_file(BROKER_DIR / "operator-token", uid)
+    if _read_secret(operator) == _read_secret(token):
+        operator.unlink()
+        operator = _secret_file(operator, uid)
     import json
 
     broker = {
@@ -314,6 +335,7 @@ def _install_data() -> None:
         "listen_host": "tailscale",
         "listen_port": 8741,
         "token_file": str(token),
+        "operator_token_file": str(operator),
         "simulator_idle_seconds": 600,
         "max_running_jobs": 1,
         "max_build_jobs": 2,
@@ -329,11 +351,42 @@ def _install_data() -> None:
     log.chmod(0o600)
 
 
-def _install_sudoers(source: Path) -> None:
+def _secret_file(path: Path, uid: int) -> Path:
+    if path.is_symlink():
+        path.unlink()
+    if not path.exists():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, (secrets.token_hex(32) + "\n").encode())
+        finally:
+            os.close(fd)
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise SystemExit("secret file must be a regular file")
+    os.chown(path, uid, 20)
+    path.chmod(0o600)
+    return path
+
+
+def _read_secret(path: Path) -> str:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise SystemExit("secret file must be a regular file")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        current = os.fstat(fd)
+        if current.st_ino != info.st_ino or current.st_dev != info.st_dev:
+            raise SystemExit("secret file must be a regular file")
+        return os.read(fd, 256).decode("utf-8")
+    finally:
+        os.close(fd)
+
+
+def _install_sudoers(source: Path, scratch: Path) -> None:
     text = (source / "sudoers.fragment").read_text().splitlines()
     rules = [line for line in text if line and not line.startswith("#")]
     body = "\n".join(rules) + "\n"
-    temporary = Path("/tmp/ios-worker.sudoers")
+    temporary = scratch / "sudoers"
     temporary.write_text(body)
     temporary.chmod(0o440)
     check = subprocess.run(["/usr/sbin/visudo", "-cf", str(temporary)], capture_output=True, text=True)

@@ -43,6 +43,7 @@ class FakeRunner:
         self.gate = threading.Event()
         self.entered = threading.Event()
         self.result = {"ok": True, "log": "ok"}
+        self.failure = None
         if not block:
             self.gate.set()
 
@@ -58,6 +59,8 @@ class FakeRunner:
     def run(self, job):
         self.started.append((job.kind, job.device_id))
         self.entered.set()
+        if self.failure is not None:
+            raise self.failure
         if not self.gate.wait(3):
             raise TimeoutError("runner was not released")
         if job.kind in {"launch", "uitest"}:
@@ -85,6 +88,9 @@ class SchedulerTest(unittest.TestCase):
             **kwargs,
         )
 
+    def _lease(self) -> str:
+        return self.scheduler.acquire_lease()
+
     def _ready(self, revision: str = "rev0001") -> str:
         self.scheduler.revisions[revision] = {"status": "ready", "archive": ""}
         return revision
@@ -98,19 +104,21 @@ class SchedulerTest(unittest.TestCase):
 
     def test_third_build_is_rejected_and_a_test_can_still_queue(self) -> None:
         revision = self._ready()
-        self.scheduler.submit_build(revision, None)
-        self.scheduler.submit_build(revision, None)
+        lease = self._lease()
+        self.scheduler.submit_build(revision, None, lease)
+        self.scheduler.submit_build(revision, None, lease)
         with self.assertRaises(QueueFull):
-            self.scheduler.submit_build(revision, None)
-        self.scheduler.submit_uitest(revision, None, None)
+            self.scheduler.submit_build(revision, None, lease)
+        self.scheduler.submit_uitest(revision, None, None, lease)
 
     def test_one_job_runs_at_a_time(self) -> None:
         self.runner = FakeRunner(block=True)
         self.addCleanup(self.runner.gate.set)
         self.scheduler = self._scheduler()
         revision = self._ready()
-        first = self.scheduler.submit_build(revision, None)
-        second = self.scheduler.submit_build(revision, None)
+        lease = self._lease()
+        first = self.scheduler.submit_build(revision, None, lease)
+        second = self.scheduler.submit_build(revision, None, lease)
         self.scheduler.step()
         self.assertTrue(self.runner.entered.wait(2))
         self.assertEqual([item[0] for item in self.runner.started], ["build"])
@@ -128,7 +136,7 @@ class SchedulerTest(unittest.TestCase):
     def test_warning_queues_launch_until_approved(self) -> None:
         self.memory.sample = MemorySample(PRESSURE_WARNING, 10, 10)
         revision = self._ready()
-        job, _session = self.scheduler.submit_launch(revision, None)
+        job, _session = self.scheduler.submit_launch(revision, None, self._lease())
         self.scheduler.step()
         self.assertEqual(self.scheduler.get(job.id).status, "waiting_for_approval")
         self.assertEqual(self.runner.started, [])
@@ -142,7 +150,7 @@ class SchedulerTest(unittest.TestCase):
         self.scheduler.step()
         self.memory.sample = MemorySample(PRESSURE_NORMAL, 1000, 1000 + 256)
         revision = self._ready()
-        job, _session = self.scheduler.submit_launch(revision, None)
+        job, _session = self.scheduler.submit_launch(revision, None, self._lease())
         self.scheduler.step()
         self.assertEqual(self.scheduler.get(job.id).status, "waiting_for_approval")
         self.assertEqual(self.runner.started, [])
@@ -152,7 +160,7 @@ class SchedulerTest(unittest.TestCase):
         self.scheduler.step()
         self.memory.sample = MemorySample(PRESSURE_NORMAL, 1000, 1000 + 255)
         revision = self._ready()
-        job, _session = self.scheduler.submit_launch(revision, None)
+        job, _session = self.scheduler.submit_launch(revision, None, self._lease())
         self.scheduler.step()
         self._wait_idle(job.id)
         self.assertEqual(self.scheduler.get(job.id).status, "succeeded")
@@ -160,7 +168,7 @@ class SchedulerTest(unittest.TestCase):
     def test_build_runs_at_warning_without_booting(self) -> None:
         self.memory.sample = MemorySample(PRESSURE_WARNING, 10, 10)
         revision = self._ready()
-        job = self.scheduler.submit_build(revision, None)
+        job = self.scheduler.submit_build(revision, None, self._lease())
         self.scheduler.step()
         self._wait_idle(job.id)
         self.assertEqual(self.runner.started, [("build", WORKER)])
@@ -177,7 +185,7 @@ class SchedulerTest(unittest.TestCase):
     def test_storage_limit_fails_before_the_build_runs(self) -> None:
         self.scheduler.disk_used = lambda: 20 * 1024 * 1024 * 1024 + 1
         revision = self._ready()
-        job = self.scheduler.submit_build(revision, None)
+        job = self.scheduler.submit_build(revision, None, self._lease())
         self.scheduler.step()
         self._wait_idle(job.id)
         self.assertEqual(self.scheduler.get(job.id).status, "failed")
@@ -187,7 +195,7 @@ class SchedulerTest(unittest.TestCase):
     def test_urgent_pressure_holds_a_build(self) -> None:
         self.memory.sample = MemorySample(PRESSURE_URGENT, 10, 10)
         revision = self._ready()
-        job = self.scheduler.submit_build(revision, None)
+        job = self.scheduler.submit_build(revision, None, self._lease())
         self.scheduler.step()
         self.assertEqual(self.scheduler.get(job.id).status, "waiting_for_approval")
         self.assertEqual(self.runner.started, [])
@@ -209,7 +217,13 @@ class SchedulerTest(unittest.TestCase):
             device_id=WORKER,
         )
         self.scheduler.jobs[launch_id] = launch
-        self.scheduler.sessions[session_id] = {"job_id": launch_id, "device_id": WORKER, "revision_id": revision}
+        lease = self.scheduler.acquire_lease()
+        self.scheduler.sessions[session_id] = {
+            "job_id": launch_id,
+            "device_id": WORKER,
+            "revision_id": revision,
+            "lease_id": lease,
+        }
         self.memory.sample = MemorySample(PRESSURE_WARNING, 10, 10)
         job = self.scheduler.submit_screenshot(session_id)
         self.scheduler.step()
@@ -223,12 +237,17 @@ class SchedulerTest(unittest.TestCase):
         self.scheduler.step()
         self.assertEqual(self.runner.shutdowns, [WORKER])
         self.assertNotIn(PERSONAL, self.runner.probes)
+
+    def test_active_lease_blocks_idle_shutdown(self) -> None:
+        self.runner.booted.add(WORKER)
+        self.scheduler.acquire_lease()
+        self.clock.now = 601
         self.scheduler.step()
-        self.assertEqual(self.runner.shutdowns, [WORKER])
+        self.assertEqual(self.runner.shutdowns, [])
 
     def test_personal_device_is_refused_even_if_the_denylist_is_empty(self) -> None:
         with self.assertRaises(PolicyError) as caught:
-            self.scheduler.submit_launch("rev0001", PERSONAL)
+            self.scheduler.submit_launch("rev0001", PERSONAL, "leasetest1")
         self.assertEqual(caught.exception.code, "personal_simulator")
         with self.assertRaises(PolicyError) as direct:
             check_device(PERSONAL, {PERSONAL}, set())
@@ -241,11 +260,91 @@ class SchedulerTest(unittest.TestCase):
             "artifact_path": "/Users/leolurch/.ssh/id_rsa",
         }
         revision = self._ready()
-        job = self.scheduler.submit_reset(revision, None)
+        job = self.scheduler.submit_reset(revision, None, self._lease())
         self.scheduler.step()
         self._wait_idle(job.id)
         self.assertEqual(self.scheduler.get(job.id).status, "failed")
         self.assertEqual(self.scheduler.artifacts, {})
+
+    def test_unknown_revision_fails_instead_of_waiting(self) -> None:
+        job = self.scheduler.submit_build("missingrev", None, self._lease())
+        self.scheduler.step()
+        self.assertEqual(self.scheduler.get(job.id).status, "failed")
+        self.assertEqual(self.scheduler.get(job.id).error, "unknown revision")
+        self.assertEqual(self.runner.started, [])
+
+    def test_failed_revision_fails_the_build(self) -> None:
+        self.scheduler.revisions["revfailed"] = {"status": "failed", "archive": ""}
+        job = self.scheduler.submit_build("revfailed", None, self._lease())
+        self.scheduler.step()
+        self.assertEqual(self.scheduler.get(job.id).error, "revision failed")
+
+    def test_compiler_tail_and_exit_code_are_kept(self) -> None:
+        from runner import WorkerFailure
+
+        self.runner.failure = WorkerFailure("compile started\nerror: use of undeclared identifier 'nope'", 65)
+        job = self.scheduler.submit_build(self._ready(), None, self._lease(), boot_after=False)
+        self.scheduler.step()
+        self._wait_idle(job.id)
+        finished = self.scheduler.get(job.id)
+        self.assertEqual(finished.status, "failed")
+        self.assertEqual(finished.exit_code, 65)
+        self.assertIn("undeclared identifier 'nope'", finished.log)
+        self.assertIsNone(finished.followup_id)
+
+    def test_symlink_artifact_is_not_exported(self) -> None:
+        import tempfile
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "artifacts"
+        export = Path(tmp.name) / "export"
+        root.mkdir()
+        outside = Path(tmp.name) / "canary.txt"
+        outside.write_text("canary-secret")
+        link = root / "shot.png"
+        link.symlink_to(outside)
+        self.scheduler.artifact_root = root
+        self.scheduler.export_root = export
+        self.runner.result = {"ok": True, "artifact_id": "shot0001", "artifact_path": str(link)}
+        job = self.scheduler.submit_reset(self._ready(), None, self._lease())
+        self.scheduler.step()
+        self._wait_idle(job.id)
+        self.assertEqual(self.scheduler.get(job.id).status, "failed")
+        self.assertEqual(self.scheduler.artifacts, {})
+        self.assertTrue(outside.read_text() == "canary-secret")
+
+    def test_regular_artifact_is_copied_out_of_the_worker_directory(self) -> None:
+        import tempfile
+
+        from containment import read_regular_file
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "artifacts"
+        export = Path(tmp.name) / "export"
+        root.mkdir()
+        source = root / "shot0001.png"
+        source.write_bytes(b"png-bytes")
+        self.scheduler.artifact_root = root
+        self.scheduler.export_root = export
+        self.runner.result = {"ok": True, "artifact_id": "shot0001", "artifact_path": str(source)}
+        job = self.scheduler.submit_reset(self._ready(), None, self._lease())
+        self.scheduler.step()
+        self._wait_idle(job.id)
+        self.assertEqual(self.scheduler.get(job.id).status, "succeeded")
+        exported = Path(self.scheduler.artifacts["shot0001"])
+        self.assertEqual(exported.parent, export)
+        self.assertFalse(exported.is_symlink())
+        self.assertFalse(source.exists())
+        self.assertEqual(read_regular_file(exported, export, 100), b"png-bytes")
+        exported.unlink()
+        exported.symlink_to(Path(tmp.name) / "canary.txt")
+        (Path(tmp.name) / "canary.txt").write_text("nope")
+        from policy import PolicyError
+
+        with self.assertRaises(PolicyError):
+            read_regular_file(exported, export, 100)
 
 
 if __name__ == "__main__":

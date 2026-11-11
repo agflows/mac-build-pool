@@ -13,10 +13,12 @@ _CODE_ROOT = str(Path(__file__).resolve().parent)
 if _CODE_ROOT not in sys.path:
     sys.path.insert(0, _CODE_ROOT)
 
+import hmac
 import ipaddress
 import json
 import os
 import pwd
+import stat
 import subprocess
 import threading
 
@@ -30,13 +32,38 @@ from scheduler import Scheduler
 install_import_path()
 
 
+def _read_secret(path: Path, label: str) -> str:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise SystemExit(label + " file is missing") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise SystemExit(label + " file must not be a symlink")
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise SystemExit(label + " file must be readable only by its owner")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        current = os.fstat(fd)
+        if not stat.S_ISREG(current.st_mode) or current.st_ino != info.st_ino or current.st_dev != info.st_dev:
+            raise SystemExit(label + " file must not be a symlink")
+        token = os.read(fd, 256).decode("utf-8").strip()
+    finally:
+        os.close(fd)
+    if len(token) < 16 or "\n" in token or "\x00" in token:
+        raise SystemExit(label + " file is missing or too short")
+    return token
+
+
 def make_app(cfg):
-    token = cfg.token_file.read_text().strip()
-    if len(token) < 16:
-        raise SystemExit("token file is missing or too short")
+    token = _read_secret(cfg.token_file, "token")
+    operator_token = _read_secret(cfg.operator_token_file, "operator token")
+    if hmac.compare_digest(token.encode(), operator_token.encode()):
+        raise SystemExit("operator token must be different from the agent token")
     runner = SudoRunner(cfg.worker.device_allowlist, cfg.worker.device_denylist)
     default_device = sorted(cfg.worker.device_allowlist)[0]
     roots = [cfg.worker.workspace_root, cfg.worker.spool_root, cfg.worker.artifact_root, TEMP_ROOT]
+    export_root = cfg.worker.artifact_root.parent / "export"
+    export_root.mkdir(mode=0o700, exist_ok=True)
     disk_used = lambda: directory_size(roots)
     scheduler = Scheduler(
         runner,
@@ -46,6 +73,7 @@ def make_app(cfg):
         default_device=default_device,
         clock=lambda: __import__("time").monotonic(),
         artifact_root=cfg.worker.artifact_root,
+        export_root=export_root,
         max_running=cfg.max_running_jobs,
         max_build_jobs=cfg.max_build_jobs,
         idle_seconds=cfg.idle_seconds,
@@ -55,6 +83,7 @@ def make_app(cfg):
     app = App(
         scheduler,
         token,
+        operator_token,
         cfg.worker.spool_root,
         cfg.allow_loopback,
         cfg.worker.max_upload_bytes,

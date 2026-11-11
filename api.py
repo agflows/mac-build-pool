@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from containment import DISK_BUDGET, MAX_ARTIFACT_BYTES
+from containment import DISK_BUDGET, MAX_ARTIFACT_BYTES, read_regular_file
 from policy import PolicyError, require_id
 from scheduler import QueueFull
 
@@ -27,6 +27,7 @@ class App:
         self,
         scheduler,
         token: str,
+        operator_token: str,
         spool_root: Path,
         allow_loopback: bool,
         max_upload_bytes: int,
@@ -35,6 +36,7 @@ class App:
     ) -> None:
         self.scheduler = scheduler
         self.token = token
+        self.operator_token = operator_token
         self.spool_root = spool_root
         self.allow_loopback = allow_loopback
         self.max_upload_bytes = max_upload_bytes
@@ -72,10 +74,21 @@ class Handler(BaseHTTPRequestHandler):
             if not peer_allowed(self.client_address[0], app.allow_loopback):
                 self._json(403, {"error": "forbidden"})
                 return
-            if not authorized(self.headers.get("Authorization", ""), app.token):
+            header = self.headers.get("Authorization", "")
+            try:
+                segments = path_segments(self.path)
+            except PolicyError:
+                if not authorized(header, app.token):
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                raise
+            if operator_route(method, segments):
+                if not authorized(header, app.operator_token) or authorized(header, app.token):
+                    self._json(403, {"error": "operator_required"})
+                    return
+            elif not authorized(header, app.token):
                 self._json(401, {"error": "unauthorized"})
                 return
-            segments = path_segments(self.path)
             body = self._read_body(app, segments, method)
             status, payload, content_type = dispatch(app, method, segments, body, self.headers.get("Content-Type", ""))
             if content_type == JSON:
@@ -127,25 +140,39 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         return 200, {"ok": True, "pressure": scheduler.pressure_name(), **counts}, JSON
     if method == "POST" and segments == ["v1", "sources"]:
         return accept_source(app, body, content_type)
+    if method == "POST" and segments == ["v1", "leases"]:
+        return 201, {"leaseId": scheduler.acquire_lease()}, JSON
+    if method == "POST" and len(segments) == 4 and segments[:2] == ["v1", "leases"] and segments[3] == "release":
+        scheduler.release_lease(require_id(segments[2], "lease"))
+        return 200, {"released": True}, JSON
     if method == "POST" and segments == ["v1", "builds"]:
         data = read_json(body)
-        job = scheduler.submit_build(require_id(data.get("revisionId"), "revision"), optional_scheme(data))
+        job = scheduler.submit_build(
+            require_id(data.get("revisionId"), "revision"),
+            optional_scheme(data),
+            require_lease(data),
+            boot_after(data),
+        )
         return 202, job_view(job), JSON
     if method == "POST" and segments == ["v1", "sessions"]:
         data = read_json(body)
+        device = guard_device(scheduler, data)
         job, session_id = scheduler.submit_launch(
             require_id(data.get("revisionId"), "revision"),
-            optional_device(data),
+            device,
+            require_lease(data),
         )
         view = job_view(job)
         view["sessionId"] = session_id
         return 202, view, JSON
     if method == "POST" and segments == ["v1", "tests"]:
         data = read_json(body)
+        device = guard_device(scheduler, data)
         job = scheduler.submit_uitest(
             require_id(data.get("revisionId"), "revision"),
             optional_scheme(data),
-            optional_device(data),
+            device,
+            require_lease(data),
         )
         return 202, job_view(job), JSON
     if method == "POST" and segments == ["v1", "reset"]:
@@ -153,7 +180,8 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         revision = data.get("revisionId")
         if revision is not None:
             revision = require_id(revision, "revision")
-        job = scheduler.submit_reset(revision, optional_device(data))
+        device = guard_device(scheduler, data)
+        job = scheduler.submit_reset(revision, device, require_lease(data))
         return 202, job_view(job), JSON
     if len(segments) == 4 and segments[0] == "v1" and segments[1] == "sessions":
         session_id = require_id(segments[2], "session")
@@ -179,12 +207,8 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
     if method == "GET" and len(segments) == 3 and segments[0] == "v1" and segments[1] == "artifacts":
         artifact_id = require_id(segments[2], "artifact")
         path = Path(scheduler.artifact_path(artifact_id))
-        if not path.is_file():
-            raise KeyError(artifact_id)
-        if path.stat().st_size > MAX_ARTIFACT_BYTES:
-            raise PolicyError("too_large", "Artifact is too large.")
         kind = "image/png" if path.suffix == ".png" else "application/octet-stream"
-        return 200, path.read_bytes(), kind
+        return 200, read_regular_file(path, scheduler.export_root, MAX_ARTIFACT_BYTES), kind
     return 404, {"error": "not_found"}, JSON
 
 
@@ -220,6 +244,8 @@ def job_view(job) -> dict:
         "deviceId": job.device_id,
         "artifactId": job.artifact_id,
         "followupJobId": job.followup_id,
+        "leaseId": job.lease_id,
+        "exitCode": job.exit_code,
         "error": job.error,
     }
 
@@ -232,6 +258,31 @@ def read_json(body: bytes) -> dict:
     if not isinstance(data, dict):
         raise PolicyError("invalid_body", "Body must be a JSON object.")
     return data
+
+
+def guard_device(scheduler, data: dict):
+    device = optional_device(data)
+    if device is not None:
+        scheduler._device(device)
+    return device
+
+
+def require_lease(data: dict) -> str:
+    lease = data.get("leaseId")
+    if not isinstance(lease, str):
+        raise PolicyError("lease_required", "A session lease is required.")
+    return require_id(lease, "lease")
+
+
+def boot_after(data: dict) -> bool:
+    value = data.get("bootSimulator", True)
+    if not isinstance(value, bool):
+        raise PolicyError("invalid_body", "bootSimulator must be a boolean.")
+    return value
+
+
+def operator_route(method: str, segments: list[str]) -> bool:
+    return method == "POST" and len(segments) == 4 and segments[:2] == ["v1", "jobs"] and segments[3] == "approve"
 
 
 def optional_scheme(data: dict):
@@ -283,6 +334,8 @@ def status_for(exc: PolicyError) -> int:
         return 413
     if exc.code == "storage_limit":
         return 507
+    if exc.code == "session_busy":
+        return 409
     return 400
 
 

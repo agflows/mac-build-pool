@@ -148,9 +148,19 @@ def _jetsam_limit(limit_mb: int) -> None:
 
 
 def directory_size(roots: list[Path]) -> int:
+    """Allocated bytes under the roots, counting each inode once.
+
+    Xcode's compilation cache is sparse: a file can report a logical size of
+    16 GB while occupying a few kilobytes. The budget is real disk usage.
+    Symlinks are not followed.
+    """
     total = 0
+    seen: set[tuple[int, int]] = set()
     for root in roots:
-        if not root.exists():
+        try:
+            if not root.exists() or root.is_symlink():
+                continue
+        except OSError:
             continue
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             dirnames[:] = [name for name in dirnames if not os.path.islink(os.path.join(dirpath, name))]
@@ -159,9 +169,16 @@ def directory_size(roots: list[Path]) -> int:
                 if os.path.islink(path):
                     continue
                 try:
-                    total += os.lstat(path).st_size
+                    info = os.lstat(path)
                 except OSError:
                     continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                key = (info.st_dev, info.st_ino)
+                if key in seen:
+                    continue
+                seen.add(key)
+                total += info.st_blocks * 512
             if total > DISK_BUDGET:
                 return total
     return total
@@ -200,6 +217,104 @@ def _children_by_parent() -> dict[int, list[int]]:
     return children
 
 
+class Tail:
+    """Keep the newest bytes so a long compile retains its final errors."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.data = bytearray()
+
+    def extend(self, chunk: bytes) -> None:
+        self.data.extend(chunk)
+        extra = len(self.data) - self.limit
+        if extra > 0:
+            del self.data[:extra]
+
+    def __bytes__(self) -> bytes:
+        return bytes(self.data)
+
+
+def copy_regular_file(source: Path, artifact_root: Path, dest_dir: Path, name: str, max_bytes: int) -> Path:
+    """Copy a worker file into broker-only storage without following a symlink."""
+    from policy import PolicyError
+
+    if not name or "/" in name or "\\" in name or name in {".", ".."}:
+        raise PolicyError("invalid_id", "Artifact name is not allowed.")
+    if source.parent.resolve() != artifact_root.resolve():
+        raise PolicyError("path_escape", "Artifact is outside the artifact directory.")
+    info = source.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise PolicyError("path_escape", "Artifact must be a regular file owned by this export.")
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        current = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or current.st_ino != info.st_ino
+            or current.st_dev != info.st_dev
+        ):
+            raise PolicyError("path_escape", "Artifact changed during export.")
+        if current.st_size > max_bytes:
+            raise PolicyError("too_large", "Artifact is too large.")
+        dest_dir.mkdir(mode=0o700, exist_ok=True)
+        dest = dest_dir / name
+        dest_fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            remaining = current.st_size
+            while remaining > 0:
+                chunk = os.read(source_fd, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(dest_fd, view)
+                    view = view[written:]
+        finally:
+            os.close(dest_fd)
+    finally:
+        os.close(source_fd)
+    try:
+        os.unlink(source)
+    except OSError:
+        pass
+    return dest
+
+
+def read_regular_file(path: Path, root: Path, max_bytes: int) -> bytes:
+    """Read an exported artifact. A symlink or a swapped inode is refused."""
+    from policy import PolicyError
+
+    if path.parent.resolve() != root.resolve():
+        raise PolicyError("path_escape", "Artifact is outside broker storage.")
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise PolicyError("path_escape", "Artifact must be a regular file.")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        current = os.fstat(fd)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or current.st_ino != info.st_ino
+            or current.st_dev != info.st_dev
+            or current.st_size > max_bytes
+        ):
+            raise PolicyError("path_escape", "Artifact changed before it was read.")
+        chunks = []
+        remaining = current.st_size
+        while remaining > 0:
+            chunk = os.read(fd, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
 def run_contained(
     argv: list[str],
     *,
@@ -221,11 +336,11 @@ def run_contained(
         close_fds=True,
         start_new_session=False,
     )
-    stdout = bytearray()
-    stderr = bytearray()
+    stdout = Tail(LOG_CAP)
+    stderr = Tail(LOG_CAP)
     pumps = [
-        _start_pump(process.stdout, stdout, LOG_CAP),
-        _start_pump(process.stderr, stderr, LOG_CAP),
+        _start_pump(process.stdout, stdout),
+        _start_pump(process.stderr, stderr),
     ]
     start = time.monotonic()
     timed_out = False
@@ -259,7 +374,7 @@ def run_contained(
     return subprocess.CompletedProcess(argv, process.returncode, bytes(stdout), bytes(stderr))
 
 
-def _start_pump(pipe, sink: bytearray, limit: int):
+def _start_pump(pipe, sink: Tail):
     import threading
 
     def _pump() -> None:
@@ -277,8 +392,7 @@ def _start_pump(pipe, sink: bytearray, limit: int):
                 continue
             if not chunk:
                 return
-            if len(sink) < limit:
-                sink.extend(chunk[: limit - len(sink)])
+            sink.extend(chunk)
 
     thread = threading.Thread(target=_pump, daemon=True)
     thread.start()
