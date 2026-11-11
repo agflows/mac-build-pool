@@ -1,5 +1,11 @@
 # Required isolated-executor contract (implementation pending)
 
+> **Owner update, 2026-11-11:** The owner subsequently accepted separate-user
+> execution and requested **code preparation only; keep the service unchanged**.
+> See [Native user mode](NATIVE_USER_MODE.md) for that explicit opt-in path.
+> The VM requirements below continue to apply to `isolated-only`, not to the
+> weaker native mode. Signing and USB APIs remain disabled in both modes.
+
 This is a specification for the missing Mac-side controller, not a claim that
 isolation already exists. The shipped host broker intentionally fails jobs when
 `/Library/ios-worker/isolation-executor` is absent. Do not replace this requirement

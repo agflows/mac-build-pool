@@ -7,6 +7,8 @@ or the generated account password.
 from __future__ import annotations
 
 import os
+import argparse
+import json
 import secrets
 import shutil
 import stat
@@ -35,6 +37,8 @@ CODE = (
     "cli.py",
     "runner.py",
     "isolated_runner.py",
+    "execution_policy.py",
+    "native_runner.py",
     "scheduler.py",
     "api.py",
     "broker.py",
@@ -47,21 +51,42 @@ def main() -> int:
     if os.geteuid() != 0:
         sys.stderr.write("install_system.py must run as root\n")
         return 1
-    source = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
+    args = parse_args(sys.argv[1:])
+    source = Path(args.source).resolve()
     scratch = _private_dir()
     try:
-        return _install(source, scratch)
+        return _install(source, scratch, native=args.execution_mode == "native-user")
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def _install(source: Path, scratch: Path) -> int:
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source', nargs='?', default=str(Path(__file__).resolve().parent))
+    parser.add_argument('--execution-mode', choices=['isolated-only', 'native-user'], default='isolated-only')
+    parser.add_argument('--accept-native-risk', action='store_true',
+                        help='Accept account separation without VM or network isolation; simulator APIs only')
+    args = parser.parse_args(argv)
+    if (args.execution_mode == 'native-user') != args.accept_native_risk:
+        parser.error('native-user requires --accept-native-risk; it is not valid with isolated-only')
+    return args
+
+
+def _install(source: Path, scratch: Path, native: bool = False) -> int:
+    if native:
+        _validate_native_account()
+        _prepare_native_helper(source, scratch)
     # Upgrade only the named service; never kill arbitrary processes using a port.
     subprocess.run(["/bin/launchctl", "bootout", "system/com.iosworker.broker"], check=False)
     _ensure_user()
     _install_code(source)
     _install_data()
-    _retire_native_host_launcher()
+    if native:
+        _install_native_helper(scratch)
+        _install_native_data_access()
+    else:
+        _retire_native_host_launcher()
+    _write_execution_policy(native)
     _install_daemon(source)
     subprocess.run(["/bin/launchctl", "bootstrap", "system", str(PLIST_DST)], check=True)
     subprocess.run(["/bin/launchctl", "enable", "system/com.iosworker.broker"], check=False)
@@ -98,8 +123,74 @@ def _install(source: Path, scratch: Path) -> int:
     print(f"token file: {BROKER_DIR / 'token'} (mode 600, value not printed)")
     print(f"operator token file: {BROKER_DIR / 'operator-token'} (mode 600, value not printed)")
     print("launchd: system/com.iosworker.broker UserName=iosbroker")
-    print("Host native execution is disabled. A reviewed isolation-executor must be installed separately.")
+    print("Native-user mode: account separation only, no VM or network isolation. Signing and USB APIs are disabled."
+          if native else "Host native execution is disabled. A reviewed isolation-executor must be installed separately.")
     return 0
+
+
+def _validate_native_account() -> None:
+    import pwd
+    try:
+        account = pwd.getpwnam('iosagent')
+    except KeyError as exc:
+        raise SystemExit('Provision a dedicated non-admin iosagent account before native installation') from exc
+    home = Path('/Users/iosagent')
+    if account.pw_uid == 0 or account.pw_dir != str(home) or _member('iosagent', 'admin'):
+        raise SystemExit('iosagent must be a dedicated non-admin account with its own home')
+    info = home.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != account.pw_uid or info.st_mode & 0o077:
+        raise SystemExit('The dedicated iosagent home must be owned by iosagent with mode 700')
+
+
+def _prepare_native_helper(source: Path, scratch: Path) -> None:
+    # Compile only this reviewed, fixed launcher, never uploaded project source.
+    subprocess.run(['/usr/bin/clang', '-O2', '-Wall', '-Werror', '-o', str(scratch / 'worker_cap'),
+                    str(source / 'worker_cap.c')], check=True)
+    fragment = scratch / 'ios-worker.sudoers'
+    fragment.write_text('iosbroker ALL=(root) NOPASSWD: /Library/ios-worker/worker_cap ""\nDefaults:iosbroker !requiretty\n')
+    fragment.chmod(0o440)
+    subprocess.run(['/usr/sbin/visudo', '-cf', str(fragment)], check=True)
+
+
+def _install_native_helper(scratch: Path) -> None:
+    for source, target, mode in [(scratch / 'worker_cap', LIBRARY / 'worker_cap', 0o755),
+                                 (scratch / 'ios-worker.sudoers', SUDOERS_DST, 0o440)]:
+        if target.is_symlink():
+            raise SystemExit('Refusing an unexpected native launcher symlink')
+        shutil.copyfile(source, target)
+        os.chown(target, 0, 0)
+        target.chmod(mode)
+        subprocess.run(['/bin/chmod', '-N', str(target)], check=True)
+
+
+def _install_native_data_access() -> None:
+    # Traversal only at the parent. Broker exports and credentials remain private.
+    subprocess.run(['/bin/chmod', '+a', 'iosagent allow search', str(DATA)], check=True)
+    for name in ('work', 'artifacts', 'tmp'):
+        path = DATA / name
+        subprocess.run(['/bin/chmod', '+a',
+                        'iosagent allow read,write,execute,delete,add_file,add_subdirectory,file_inherit,directory_inherit', str(path)], check=True)
+        subprocess.run(['/bin/chmod', '+a',
+                        'iosbroker allow read,execute,file_inherit,directory_inherit', str(path)], check=True)
+    subprocess.run(['/bin/chmod', '+a', 'iosagent allow read,execute,file_inherit,directory_inherit',
+                    str(DATA / 'spool')], check=True)
+
+
+def _write_execution_policy(native: bool) -> None:
+    from execution_policy import NATIVE_ACK
+    data = {'mode': 'native-user', 'acknowledgement': NATIVE_ACK} if native else {'mode': 'isolated-only'}
+    fd, name = tempfile.mkstemp(dir=LIBRARY, prefix='.execution-')
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(data, stream)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), 0o644)
+        os.replace(name, LIBRARY / 'execution.json')
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
 def _private_dir() -> Path:

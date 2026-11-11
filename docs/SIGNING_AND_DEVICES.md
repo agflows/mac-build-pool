@@ -1,5 +1,11 @@
 # Signing and USB deployment: design, not implemented
 
+> **Owner update, 2026-11-11:** The owner subsequently accepted separate-user
+> execution and requested **code preparation only; keep the service unchanged**.
+> See [Native user mode](NATIVE_USER_MODE.md) for that explicit opt-in path.
+> The VM requirements below continue to apply to `isolated-only`, not to the
+> weaker native mode. Signing and USB APIs remain disabled in both modes.
+
 ## What signing means
 
 There are different artifacts/workflows:

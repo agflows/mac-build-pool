@@ -1,6 +1,6 @@
 /*
- * GUEST-ONLY reference helper. Do not install/grant sudo for it on the host.
- * Fixed privileged entry point. Inside an isolated guest, sudoers can allow iosbroker to run this
+ * Fixed privileged entry point. In a guest or explicitly owner-opted-in native
+ * mode, sudoers allows iosbroker to run this
  * binary as root with no arguments. It sets a 6 GB jetsam cap on its own
  * pid, permanently becomes iosagent, and execs the worker. It does not
  * read stdin, the environment, or argv beyond rejecting extra arguments.
@@ -25,9 +25,9 @@ struct memorystatus_memlimit_properties {
 int memorystatus_control(uint32_t command, int32_t pid, uint32_t flags, void *buffer, size_t buffersize);
 
 static void close_extra_descriptors(void) {
-    int fd;
-    for (fd = 3; fd < 256; fd++) {
-        close(fd);
+    int limit = getdtablesize();
+    for (int fd = 3; fd < limit; ++fd) {
+        (void)close(fd);
     }
 }
 

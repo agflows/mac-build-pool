@@ -93,7 +93,8 @@ class Handler(BaseHTTPRequestHandler):
                                                    ["v1", "builds"], ["v1", "sessions"], ["v1", "tests"], ["v1", "reset"]):
                 installed = getattr(app.scheduler.runner, "installed", None)
                 if installed is not None and not installed():
-                    raise PolicyError("isolation_required", "A reviewed isolated executor is required; native host execution is disabled.")
+                    raise PolicyError(getattr(app.scheduler.runner, "unavailable_code", "isolation_required"),
+                                      "The configured execution backend is unavailable. No fallback is allowed.")
             body = self._read_body(app, segments, method)
             status, payload, content_type = dispatch(app, method, segments, body, self.headers.get("Content-Type", ""))
             if content_type == JSON:
@@ -143,7 +144,10 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
     if method == "GET" and segments == ["v1", "health"]:
         counts = scheduler.counts()
         installed = getattr(scheduler.runner, "installed", lambda: False)()
-        return 200, {"ok": True, "executionMode": "isolated-only", "executorInstalled": installed,
+        mode = getattr(scheduler.runner, "execution_mode", "isolated-only")
+        return 200, {"ok": True, "executionMode": mode, "executorInstalled": installed,
+                     "securityBoundary": "unix-account" if mode == "native-user" else "external-vm-controller-required",
+                     "networkIsolationVerified": False, "signingAPIEnabled": False, "usbAPIEnabled": False,
                      "pressure": scheduler.pressure_name(), **counts}, JSON
     if method == "POST" and segments == ["v1", "sources"]:
         return accept_source(app, body, content_type)
@@ -349,7 +353,7 @@ def authorized(header: str, token: str) -> bool:
 
 
 def status_for(exc: PolicyError) -> int:
-    if exc.code in {"isolation_required", "unsafe_executor"}:
+    if exc.code in {"isolation_required", "unsafe_executor", "native_worker_unavailable", "unsafe_execution_policy", "bad_execution_policy"}:
         return 503
     if exc.code in {"personal_simulator", "device_not_allowed"}:
         return 403

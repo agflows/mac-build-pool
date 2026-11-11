@@ -32,6 +32,7 @@ TEMP_ROOT = LIBRARY_ROOT / "data" / "tmp"
 BROKER_USER = "iosbroker"
 AGENT_USER = "iosagent"
 CODE_FILES = (
+    "audit.py",
     "policy.py",
     "config.py",
     "memory.py",
@@ -42,6 +43,8 @@ CODE_FILES = (
     "guest_guard.py",
     "runner.py",
     "isolated_runner.py",
+    "execution_policy.py",
+    "native_runner.py",
     "scheduler.py",
     "api.py",
     "broker.py",

@@ -51,7 +51,7 @@ class PreparationTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.cfg = WorkerConfig(self.root / "work", self.root / "spool", self.root / "artifacts",
                                 DEVELOPER_DIR, {WORKER}, set(), allow_dependency_install=True)
         self.revision = self.cfg.workspace_root / "rev1"

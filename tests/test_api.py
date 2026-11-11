@@ -219,6 +219,28 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(list(self.httpd.app.spool_root.iterdir()), [])
         self.assertEqual(self._request("POST", "/v1/leases", b"{}")[0], 503)
 
+    def test_native_health_does_not_claim_isolation_or_signing(self):
+        self.runner.execution_mode = "native-user"
+        self.runner.installed = lambda: True
+        status, raw = self._request("GET", "/v1/health")
+        self.assertEqual(status, 200)
+        result = json.loads(raw)
+        self.assertEqual(result["securityBoundary"], "unix-account")
+        self.assertFalse(result["networkIsolationVerified"])
+        self.assertFalse(result["signingAPIEnabled"])
+        self.assertFalse(result["usbAPIEnabled"])
+        for route in ("execution-mode", "sign", "deploy", "usb"):
+            self.assertEqual(self._request("POST", "/v1/" + route, b'{}')[0], 404)
+
+    def test_unavailable_native_backend_never_stages_uploads(self):
+        self.runner.execution_mode = "native-user"
+        self.runner.unavailable_code = "native_worker_unavailable"
+        self.runner.installed = lambda: False
+        status, raw = self._request("POST", "/v1/sources", b"not-staged", content_type="application/gzip")
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(raw)["error"], "native_worker_unavailable")
+        self.assertEqual(list(self.httpd.app.spool_root.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

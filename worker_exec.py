@@ -469,16 +469,16 @@ def _require_disk(cfg) -> None:
 def main() -> int:
     os.umask(0o077)
     try:
-        from guest_guard import require_macos_guest
-        require_macos_guest()
-        if os.geteuid() != _uid("iosagent"):
-            sys.stderr.write("worker must run as iosagent\n")
-            return 2
+        from execution_policy import require_worker_execution, require_protected_file, require_native_config, NATIVE
+        mode = require_worker_execution()
+        require_protected_file(CONFIG_PATH)
         from containment import apply_rlimits
 
         apply_rlimits()
         request = json.load(sys.stdin)
         cfg = load_worker_config(CONFIG_PATH)
+        if mode == NATIVE:
+            require_native_config(cfg)
         if cfg.developer_dir != DEVELOPER_DIR:
             raise PolicyError("bad_config", "developer_dir is fixed.")
         result = perform(

@@ -20,6 +20,9 @@ EXECUTOR = Path("/Library/ios-worker/isolation-executor")
 
 
 class IsolatedRunner:
+    execution_mode = "isolated-only"
+    unavailable_code = "isolation_required"
+
     def __init__(self, allowlist: set[str], denylist: set[str]):
         self.allowlist = allowlist
         self.denylist = denylist

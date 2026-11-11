@@ -2,12 +2,18 @@
 
 Experimental macOS build/test API for remote agents. Project recipes cover **Swift,
 Expo/React Native and Flutter iOS apps**. The host broker no longer executes
-projects directly on the personal Mac.
+projects as the personal login account.
+
+> **Owner update, 2026-11-11:** A separate, explicitly opted-in `native-user`
+> mode is now prepared at the owner’s request. It uses account separation, **not
+> VM or network isolation**. Installation and real build validation are deferred;
+> the installed service was left unchanged. Read [Native user mode](docs/NATIVE_USER_MODE.md).
+> The default remains `isolated-only`; the requirements below describe that mode.
 
 > **Not production-ready.** The isolated VM/network executor is a required
 > integration and is **not implemented in this repository yet**. Without it, work requests
 > fail closed with HTTP 503 / `isolation_required`. Unit tests are not proof that a Mac is
-> isolated. There is no native-host fallback or setting that asserts isolation.
+> isolated. There is no automatic native-host fallback or setting that asserts isolation.
 
 ## Why the boundary changed
 
@@ -17,7 +23,7 @@ Build scripts, Swift macros/plugins, npm lifecycle scripts, Podfiles, Dart build
 hooks and tests all execute code. Existing host services can also execute outside
 an inherited process sandbox. Framework-specific recipes are not security controls.
 
-The required architecture is:
+The architecture required for full isolation is:
 
 ```
 Remote agent → authenticated host broker → isolated VM/network controller
@@ -34,7 +40,7 @@ Remote agent → authenticated host broker → isolated VM/network controller
 - `IsolatedRunner` is the host-side **contract**, not a VM implementation. See
   [docs/ISOLATION_CONTRACT.md](docs/ISOLATION_CONTRACT.md).
 - A missing/untrusted controller cannot fall back to the previous `SudoRunner`.
-- Host installer removes this project's old native sudo grant/helper. It does
+- Default host installer removes this project's old native sudo grant/helper. It does
   **not** install a replacement VM controller or silently make the worker ready.
 - Executor-side entry point refuses a physical Mac and shared/network mounts.
   This accidental-host guard is **not** an egress or complete isolation verifier.

@@ -27,6 +27,8 @@ from config import BROKER_DIR, TAILSCALE_NET, load_broker_config, validate_liste
 from containment import LIBRARY_ROOT, TEMP_ROOT, apply_rlimits, directory_size, install_import_path, launch_path_problems
 from memory import sample_system
 from isolated_runner import IsolatedRunner
+from execution_policy import execution_mode, NATIVE, require_native_config
+from native_runner import NativeUserRunner
 from scheduler import Scheduler
 
 install_import_path()
@@ -59,7 +61,11 @@ def make_app(cfg):
     operator_token = _read_secret(cfg.operator_token_file, "operator token")
     if hmac.compare_digest(token.encode(), operator_token.encode()):
         raise SystemExit("operator token must be different from the agent token")
-    runner = IsolatedRunner(cfg.worker.device_allowlist, cfg.worker.device_denylist)
+    mode = execution_mode()
+    if mode == NATIVE:
+        require_native_config(cfg.worker)
+    runner_class = NativeUserRunner if mode == NATIVE else IsolatedRunner
+    runner = runner_class(cfg.worker.device_allowlist, cfg.worker.device_denylist)
     default_device = sorted(cfg.worker.device_allowlist)[0]
     roots = [cfg.worker.workspace_root, cfg.worker.spool_root, cfg.worker.artifact_root, TEMP_ROOT]
     export_root = cfg.worker.artifact_root.parent / "export"
@@ -159,7 +165,7 @@ def main(argv: list[str]) -> int:
     httpd = serve(app, host, cfg.listen_port)
     print(
         f"listening on {host}:{cfg.listen_port} as uid {os.geteuid()}. "
-        "Project execution requires the isolated executor; native host fallback is disabled.",
+        f"Execution mode: {getattr(scheduler.runner, 'execution_mode', 'isolated-only')}. No automatic backend fallback.",
         flush=True,
     )
     try:

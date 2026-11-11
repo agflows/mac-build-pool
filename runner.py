@@ -1,7 +1,7 @@
-"""Guest-only helper transport; NEVER the personal Mac host execution backend.
+"""Fixed helper transport for guest workers and explicitly opted-in native users.
 
-The host broker uses IsolatedRunner instead. This remains a reference for a
-protected helper inside a disposable guest, not a host fallback.
+The default host backend is IsolatedRunner. NativeUserRunner adds protected
+owner-policy checks around this transport; it is never an automatic fallback.
 
 Run a worker operation through the fixed root helper.
 
@@ -87,9 +87,12 @@ class SudoRunner:
         if process.returncode != 0:
             raise _failure_from_stderr(stderr, process.returncode)
         try:
-            return json.loads(stdout.decode("utf-8"))
-        except json.JSONDecodeError as exc:
+            result = json.loads(stdout.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeError) as exc:
             raise WorkerFailure("worker returned no JSON", process.returncode) from exc
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise WorkerFailure("worker did not confirm successful execution", process.returncode)
+        return result
 
 
 def _failure_from_stderr(stderr: bytes, returncode: int) -> WorkerFailure:
