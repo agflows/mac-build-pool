@@ -1,0 +1,12 @@
+{
+  "workspace_root": "/Library/ios-worker/data/work",
+  "spool_root": "/Library/ios-worker/data/spool",
+  "artifact_root": "/Library/ios-worker/data/artifacts",
+  "developer_dir": "/Applications/Xcode.app/Contents/Developer",
+  "device_allowlist": ["3C8BB98E-6383-446B-AF87-1E1282762A13"],
+  "device_denylist": ["4D015300-4BAE-4E6D-89C9-BC4D454E4216"],
+  "sandbox_builds": false,
+  "max_upload_bytes": 67108864,
+  "disk_budget_bytes": 21474836480,
+  "memory_limit_bytes": 6442450944
+}

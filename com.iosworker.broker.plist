@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.iosworker.broker</string>
+	<key>UserName</key>
+	<string>iosbroker</string>
+	<key>GroupName</key>
+	<string>staff</string>
+	<key>WorkingDirectory</key>
+	<string>/tmp</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>-I</string>
+		<string>/Library/ios-worker/broker.py</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>PYTHONNOUSERSITE</key>
+		<string>1</string>
+		<key>PYTHONDONTWRITEBYTECODE</key>
+		<string>1</string>
+	</dict>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>JetsamProperties</key>
+	<dict>
+		<key>JetsamMemoryLimit</key>
+		<integer>6144</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/iosbroker/.ios-worker/broker.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/iosbroker/.ios-worker/broker.log</string>
+	<key>AbandonProcessGroup</key>
+	<false/>
+</dict>
+</plist>

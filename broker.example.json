@@ -1,0 +1,10 @@
+{
+  "worker_config": "/Library/ios-worker/worker.json",
+  "listen_host": "tailscale",
+  "listen_port": 8741,
+  "token_file": "/Users/iosbroker/.ios-worker/token",
+  "simulator_idle_seconds": 600,
+  "max_running_jobs": 1,
+  "max_build_jobs": 2,
+  "allow_loopback": false
+}
