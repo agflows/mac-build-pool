@@ -20,7 +20,8 @@ PROCESS_LIMIT = 512
 LOG_CAP = 64 * 1024
 STDOUT_CAP = 1024 * 1024
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
-BUILD_TIMEOUT = 900
+BUILD_TIMEOUT = 1800
+PREPARE_TIMEOUT = 2700
 TEST_TIMEOUT = 900
 DEFAULT_TIMEOUT = 120
 
@@ -37,11 +38,14 @@ CODE_FILES = (
     "tarsafe.py",
     "containment.py",
     "worker_exec.py",
+    "workspace.py",
+    "guest_guard.py",
     "runner.py",
+    "isolated_runner.py",
     "scheduler.py",
     "api.py",
     "broker.py",
-    "worker_cap",
+    "cli.py",
 )
 
 SUDO_ARGV = [
@@ -322,6 +326,7 @@ def run_contained(
     env: dict[str, str],
     disk_roots: list[Path] | None = None,
     disk_budget: int = DISK_BUDGET,
+    cwd: Path | str = "/tmp",
 ) -> subprocess.CompletedProcess:
     if not argv or not argv[0].startswith("/") or any("\x00" in part or not isinstance(part, str) for part in argv):
         raise ValueError("refusing arguments")
@@ -332,7 +337,7 @@ def run_contained(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
-        cwd="/tmp",
+        cwd=str(cwd),
         close_fds=True,
         start_new_session=False,
     )

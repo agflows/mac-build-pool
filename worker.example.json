@@ -6,6 +6,14 @@
   "device_allowlist": ["3C8BB98E-6383-446B-AF87-1E1282762A13"],
   "device_denylist": ["4D015300-4BAE-4E6D-89C9-BC4D454E4216"],
   "sandbox_builds": false,
+  "allow_dependency_install": false,
+  "toolchain": {
+    "node": "/opt/homebrew/bin/node",
+    "npm_cli": "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js",
+    "pod": "/opt/homebrew/bin/pod",
+    "ruby_bin": "/opt/homebrew/opt/ruby/bin",
+    "flutter_sdk": "/Library/ios-worker/toolchains/flutter"
+  },
   "max_upload_bytes": 67108864,
   "disk_budget_bytes": 21474836480,
   "memory_limit_bytes": 6442450944

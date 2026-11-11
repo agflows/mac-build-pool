@@ -180,5 +180,45 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(peer_allowed("127.0.0.1", False))
 
 
+    def test_preparation_requires_lease_and_accepts_only_named_recipe(self):
+        body = {"revisionId": "rev1", "recipe": "expo-ios"}
+        self.assertEqual(self._request("POST", "/v1/preparations", json.dumps(body).encode())[0], 400)
+        body["leaseId"] = self._lease()
+        body["recipe"] = "shell"
+        self.assertEqual(self._request("POST", "/v1/preparations", json.dumps(body).encode())[0], 400)
+        body["recipe"] = "expo-ios"
+        body["publicEnv"] = {"PATH": "/tmp"}
+        self.assertEqual(self._request("POST", "/v1/preparations", json.dumps(body).encode())[0], 400)
+        body["publicEnv"] = {"EXPO_PUBLIC_API_URL": "https://example.test"}
+        status, raw = self._request("POST", "/v1/preparations", json.dumps(body).encode())
+        self.assertEqual(status, 202)
+        result = json.loads(raw)
+        self.assertEqual(result["kind"], "prepare")
+        self.assertEqual(result["recipe"], "expo-ios")
+        self.assertNotIn("publicEnv", result)
+
+    def test_release_build_options_are_validated_and_forwarded(self):
+        body = {"revisionId": "rev1", "leaseId": self._lease(), "configuration": "Release", "forTesting": False, "bootSimulator": False}
+        status, raw = self._request("POST", "/v1/builds", json.dumps(body).encode())
+        self.assertEqual(status, 202)
+        result = json.loads(raw)
+        self.assertEqual(result["configuration"], "Release")
+        self.assertFalse(result["forTesting"])
+        body["configuration"] = "Release; /bin/sh"
+        self.assertEqual(self._request("POST", "/v1/builds", json.dumps(body).encode())[0], 400)
+        body["configuration"] = "Debug"
+        body["forTesting"] = "false"
+        self.assertEqual(self._request("POST", "/v1/builds", json.dumps(body).encode())[0], 400)
+
+
+    def test_missing_isolation_adapter_refuses_work_before_staging_source(self):
+        self.runner.installed = lambda: False
+        status, raw = self._request("POST", "/v1/sources", b"not-staged", content_type="application/gzip")
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(raw)["error"], "isolation_required")
+        self.assertEqual(list(self.httpd.app.spool_root.iterdir()), [])
+        self.assertEqual(self._request("POST", "/v1/leases", b"{}")[0], 503)
+
+
 if __name__ == "__main__":
     unittest.main()

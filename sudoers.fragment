@@ -1,5 +1,7 @@
-# Install with visudo. Exact argv, no arguments and no wildcard.
+# GUEST-ONLY reference, NOT installed by the host installer.
+# Never restore this native-host grant to bypass the isolation controller.
+# Install inside a reviewed guest only. Exact argv, no arguments and no wildcard.
 # worker_cap is root-owned, takes no arguments, sets the 6 GB jetsam cap,
 # then permanently switches to iosagent and execs the fixed worker.
-iosbroker ALL=(root) NOPASSWD: /Library/ios-worker/worker_cap
+iosbroker ALL=(root) NOPASSWD: /Library/ios-worker/worker_cap ""
 Defaults:iosbroker !requiretty

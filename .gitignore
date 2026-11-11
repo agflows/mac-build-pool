@@ -1,3 +1,16 @@
 __pycache__/
 *.pyc
 .DS_Store
+.env
+.env.*
+token
+operator-token
+worker.json
+broker.json
+*.p12
+*.mobileprovision
+*.xcresult/
+DerivedData/
+node_modules/
+.worker/
+results/

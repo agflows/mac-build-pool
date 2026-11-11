@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import DEVELOPER_DIR, WorkerConfig, load_worker_config
 from memory import PRESSURE_WARNING, MemorySample
 from policy import PolicyError
-from worker_exec import build, ensure_booted, perform, shutdown
+from worker_exec import build, ensure_booted, perform, shutdown, screenshot
 
 WORKER = "3C8BB98E-6383-446B-AF87-1E1282762A13"
 PERSONAL = "4D015300-4BAE-4E6D-89C9-BC4D454E4216"
@@ -139,6 +139,26 @@ class WorkerGuardTest(unittest.TestCase):
         with self.assertRaises(PolicyError) as caught:
             load_worker_config(path)
         self.assertEqual(caught.exception.code, "bad_config")
+
+
+    def test_screenshot_is_readable_by_broker_group_inside_private_directory(self):
+        import stat
+        self.cfg.artifact_root.mkdir()
+        self.commands.state = "Booted"
+        original = self.commands.run
+
+        def run(argv, timeout):
+            if "screenshot" in argv:
+                path = Path(argv[-1])
+                path.write_bytes(b"test-image")
+                path.chmod(0o600)
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return original(argv, timeout)
+
+        self.commands.run = run
+        result = screenshot({"device_id": WORKER, "artifact_id": "shot1"}, self.cfg, self.commands, warning)
+        path = Path(result["artifact_path"])
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
 
 
 if __name__ == "__main__":

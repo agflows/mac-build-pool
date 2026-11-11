@@ -19,13 +19,16 @@ import os
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
+import time
 
 from config import DEVELOPER_DIR, LIBRARY_ROOT, load_worker_config
-from containment import LOG_CAP, TEMP_ROOT, directory_size, install_import_path, run_contained, worker_child_env
+from containment import BUILD_TIMEOUT, PREPARE_TIMEOUT, LOG_CAP, TEMP_ROOT, directory_size, install_import_path, run_contained, worker_child_env
 from memory import boot_needs_approval, sample_system
-from policy import PolicyError, check_device, require_id, require_scheme, require_under
+from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_bool, require_configuration, require_recipe, require_public_env
 from tarsafe import extract_source
+from workspace import is_expo_project, is_flutter_project, copy_flutter_sdk, toolchain_paths, workspace_env, preparation_receipt, load_prepared_env
 
 install_import_path()
 CONFIG_PATH = LIBRARY_ROOT / "worker.json"
@@ -46,6 +49,8 @@ class Commands:
         self.xcodebuild = str(Path(developer_dir) / "usr/bin/xcodebuild")
         # xcrun is the system shim. This Xcode does not ship one under Developer/usr/bin.
         self.xcrun = "/usr/bin/xcrun"
+        self.env = worker_child_env(developer_dir)
+        self.cwd = Path("/tmp")
 
     def run(self, argv: list, timeout: int) -> subprocess.CompletedProcess:
         if not argv or any(not isinstance(part, str) or "\x00" in part for part in argv):
@@ -56,7 +61,8 @@ class Commands:
             return run_contained(
                 list(argv),
                 timeout=timeout,
-                env=worker_child_env(self.developer_dir),
+                env=self.env,
+                cwd=self.cwd,
                 disk_roots=self.disk_roots,
                 disk_budget=self.disk_budget,
             )
@@ -70,6 +76,8 @@ def perform(request: dict, cfg, commands: Commands, memory=sample_system) -> dic
     op = request.get("op")
     if op == "ingest":
         return ingest(request, cfg)
+    if op == "prepare":
+        return prepare(request, cfg, commands)
     if op == "build":
         return build(request, cfg, commands)
     if op == "launch":
@@ -105,6 +113,71 @@ def ingest(request: dict, cfg) -> dict:
     return {"ok": True, "log": "extracted"}
 
 
+def prepare(request: dict, cfg, commands: Commands) -> dict:
+    recipe = require_recipe(request.get("recipe"))
+    tools = toolchain_paths(cfg, recipe)  # Guest owner opt-in and read-only base toolchains.
+    revision = _revision(request, cfg)
+    public_env = require_public_env(request.get("public_env", {}))
+    if recipe != "expo-ios" and public_env:
+        raise PolicyError("invalid_environment", "EXPO_PUBLIC_ configuration is only supported by expo-ios.")
+    if recipe == "expo-ios":
+        if not is_expo_project(revision) or not (revision / "package-lock.json").is_file():
+            raise PolicyError("project", "expo-ios requires package.json and package-lock.json at the snapshot root.")
+        require_under(revision / "package-lock.json", revision)
+    elif recipe == "flutter-ios":
+        if not is_flutter_project(revision) or not (revision / "pubspec.lock").is_file() or not (revision / "ios").is_dir():
+            raise PolicyError("project", "flutter-ios requires a Flutter app with pubspec.yaml, pubspec.lock and ios/.")
+        require_under(revision / "pubspec.lock", revision)
+        if directory_size([tools["flutter_sdk"]]) + directory_size([revision]) > cfg.disk_budget:
+            raise PolicyError("storage_limit", "Private Flutter SDK copy exceeds the workspace disk budget.")
+        copy_flutter_sdk(revision, tools["flutter_sdk"])
+    commands.cwd = revision
+    commands.env = workspace_env(revision, cfg, public_env, tools=tools)
+    receipt = preparation_receipt(revision)
+    receipt.unlink(missing_ok=True)  # Never reuse a receipt after failed preparation.
+    if recipe == "expo-ios":
+        steps = [
+            ("npm ci", [str(tools["node"]), str(tools["npm_cli"]), "ci", "--no-audit", "--no-fund"]),
+            ("expo prebuild", [str(tools["node"]), str(revision / "node_modules/expo/bin/cli"), "prebuild", "--platform", "ios", "--no-install", "--clean", "--skip-dependency-update", "react,react-native"]),
+            ("pod install", [str(tools["pod"]), "install", "--project-directory=" + str(revision / "ios")]),
+        ]
+    elif recipe == "flutter-ios":
+        flutter = str(revision / ".worker/flutter/bin/flutter")
+        steps = [
+            ("flutter pub get", [flutter, "pub", "get", "--enforce-lockfile"]),
+            ("flutter iOS configuration", [flutter, "build", "ios", "--simulator", "--debug", "--config-only", "--no-pub", "--no-codesign"]),
+        ]
+        # Flutter's config-only build processes plugins/Pods (or SwiftPM) itself.
+    else:
+        project = _find_project(revision)
+        scheme = _scheme(request, project, commands)
+        steps = [("resolve Swift packages", [commands.xcodebuild, _project_flag(project), str(project),
+                  "-scheme", scheme, "-resolvePackageDependencies", "-onlyUsePackageVersionsFromResolvedFile",
+                  "-clonedSourcePackagesDirPath", str(revision / ".worker/cache/swift-packages")])]
+
+    deadline = time.monotonic() + PREPARE_TIMEOUT - 30
+    log = ""
+    for label, argv in steps:
+        _require_disk(cfg)
+        remaining = int(deadline - time.monotonic())
+        if remaining < 1:
+            raise CommandFailed((log + "\nPreparation deadline exceeded")[-LOG_CAP:], 124)
+        log = (log + "\n== " + label + " ==\n")[-LOG_CAP:]
+        try:
+            completed = commands.run(argv, timeout=remaining)
+        except Exception as exc:
+            raise CommandFailed((log + str(exc))[-LOG_CAP:], 1) from exc
+        log = (log + _tail(completed))[-LOG_CAP:]
+        if completed.returncode != 0:
+            raise CommandFailed(log, completed.returncode)
+    project = _find_project(revision)
+    if recipe == "expo-ios" and project.suffix != ".xcworkspace":
+        raise PolicyError("preparation_failed", "CocoaPods did not produce an Xcode workspace.")
+    _require_disk(cfg)
+    receipt.write_text(json.dumps({"recipe": recipe, "publicEnv": public_env}) + "\n")
+    return {"ok": True, "recipe": recipe, "log": log, "exitCode": 0}
+
+
 def build(request: dict, cfg, commands: Commands) -> dict:
     if cfg.sandbox_builds:
         raise PolicyError(
@@ -116,14 +189,21 @@ def build(request: dict, cfg, commands: Commands) -> dict:
         require_scheme(request.get("scheme"))
     shutdown({"op": "shutdown", "device_id": device}, cfg, commands)
     revision = _revision(request, cfg)
+    configuration = require_configuration(request.get("configuration", "Debug"))
+    if is_flutter_project(revision) and configuration != "Debug":
+        raise PolicyError("invalid_configuration", "Flutter iOS simulator builds use Debug mode.")
+    for_testing = require_bool(request.get("for_testing", True), "forTesting")
+    _configure_project_commands(revision, cfg, commands)
     project = _find_project(revision)
     scheme = _scheme(request, project, commands)
     derived = require_under(revision / "DerivedData", cfg.workspace_root)
     argv = [
         commands.xcodebuild,
-        "build-for-testing",
-        "-project",
+        "build-for-testing" if for_testing else "build",
+        _project_flag(project),
         str(project),
+        "-configuration",
+        configuration,
         "-scheme",
         scheme,
         "-destination",
@@ -138,7 +218,7 @@ def build(request: dict, cfg, commands: Commands) -> dict:
         "CODE_SIGNING_REQUIRED=NO",
         "CODE_SIGN_IDENTITY=-",
     ]
-    completed = commands.run(argv, timeout=900)
+    completed = commands.run(argv, timeout=BUILD_TIMEOUT - 60)
     tail = _check(completed, "build failed")
     return {"ok": True, "log": tail, "exitCode": 0}
 
@@ -147,7 +227,7 @@ def launch(request: dict, cfg, commands: Commands, memory) -> dict:
     revision = _revision(request, cfg)
     device = _device(request, cfg)
     derived = require_under(revision / "DerivedData", cfg.workspace_root)
-    app = _find_app(derived)
+    app = _find_app(derived, require_configuration(request.get("configuration", "Debug")))
     bundle = _bundle_id(app)
     ensure_booted(device, bool(request.get("approved")), cfg, commands, memory)
     install = commands.run([commands.xcrun, "simctl", "install", device, str(app)], timeout=180)
@@ -165,21 +245,40 @@ def screenshot(request: dict, cfg, commands: Commands, memory) -> dict:
     _check(completed, "screenshot failed")
     if path.is_symlink() or not path.is_file():
         raise CommandFailed("screenshot failed", completed.returncode or 1)
+    # Both service accounts use staff, but the artifact directory is 700 with
+    # access only for iosbroker/iosagent. Allow the broker to read this output
+    # even when simctl honored our private 077 umask; never chmod through a link.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise PolicyError("path_escape", "Screenshot must be a regular, unlinked output file.")
+        os.fchmod(fd, 0o640)
+    finally:
+        os.close(fd)
     return {"ok": True, "log": "screenshot", "artifact_id": artifact_id, "artifact_path": str(path)}
 
 
 def uitest(request: dict, cfg, commands: Commands, memory) -> dict:
+    if cfg.sandbox_builds:
+        raise PolicyError("sandbox_untested", "Test sandboxing has not been validated.")
     device = _device(request, cfg)
     revision = _revision(request, cfg)
+    configuration = require_configuration(request.get("configuration", "Debug"))
     project = _find_project(revision)
+    _configure_project_commands(revision, cfg, commands)
     scheme = _scheme(request, project, commands)
     ensure_booted(device, bool(request.get("approved")), cfg, commands, memory)
     derived = require_under(revision / "DerivedData", cfg.workspace_root)
     argv = [
         commands.xcodebuild,
         "test-without-building",
-        "-project",
+        _project_flag(project),
         str(project),
+        "-configuration",
+        configuration,
+        "-parallel-testing-enabled",
+        "NO",
         "-scheme",
         scheme,
         "-destination",
@@ -261,22 +360,44 @@ def _destination(request: dict, cfg) -> str:
     return f"platform=iOS Simulator,id={_device(request, cfg)},arch=arm64"
 
 
+def _configure_project_commands(revision: Path, cfg, commands: Commands) -> None:
+    if is_expo_project(revision) or is_flutter_project(revision) or (revision / ".worker/prepared.json").exists():
+        commands.env = load_prepared_env(revision, cfg)
+        # CoreSimulator/Xcode need the actual account home to find its devices.
+        # Package caches remain job-local; only installers use the synthetic HOME.
+        commands.env["HOME"] = "/Users/iosagent"
+        commands.env.pop("CFFIXED_USER_HOME", None)
+        commands.cwd = revision
+
+
+def _project_flag(project: Path) -> str:
+    return "-workspace" if project.suffix == ".xcworkspace" else "-project"
+
+
 def _find_project(revision: Path) -> Path:
-    matches = list(revision.glob("*.xcodeproj")) + list(revision.glob("*/*.xcodeproj"))
-    matches = [item for item in matches if item.is_dir()]
-    if len(matches) != 1:
-        raise PolicyError("project", "The snapshot must contain exactly one Xcode project.")
-    return matches[0]
+    # Prefer a CocoaPods workspace. Do not select .xcodeproj/project.xcworkspace
+    # or dependency projects beneath node_modules/Pods.
+    bases = [revision] + [p for p in revision.iterdir() if p.is_dir()
+                          and p.name not in {"node_modules", "Pods", "DerivedData", ".worker"}
+                          and p.suffix not in {".xcodeproj", ".xcworkspace"}]
+    for suffix in ("xcworkspace", "xcodeproj"):
+        matches = [p for base in bases for p in base.glob("*." + suffix) if p.is_dir()]
+        if len(matches) > 1:
+            raise PolicyError("project", "Snapshot has multiple Xcode containers; provide a single app at root or one directory below.")
+        if matches:
+            return require_under(matches[0], revision)
+    raise PolicyError("project", "Expected an Xcode project/workspace at root or one directory below. Expo projects must be prepared first.")
 
 
 def _scheme(request: dict, project: Path, commands: Commands) -> str:
     requested = request.get("scheme")
     if requested:
         requested = require_scheme(requested)
-    completed = commands.run([commands.xcodebuild, "-project", str(project), "-list", "-json"], timeout=60)
+    completed = commands.run([commands.xcodebuild, _project_flag(project), str(project), "-list", "-json"], timeout=60)
     _check(completed, "xcodebuild -list failed")
     listing = json.loads(completed.stdout.decode("utf-8"))
-    schemes = list(listing.get("project", {}).get("schemes", []))
+    section = "workspace" if project.suffix == ".xcworkspace" else "project"
+    schemes = list(listing.get(section, {}).get("schemes", []))
     if requested:
         if requested not in schemes:
             raise PolicyError("invalid_scheme", "Scheme is not in this project.")
@@ -286,12 +407,12 @@ def _scheme(request: dict, project: Path, commands: Commands) -> str:
     return schemes[0]
 
 
-def _find_app(derived: Path) -> Path:
+def _find_app(derived: Path, configuration: str = "Debug") -> Path:
     products = derived / "Build" / "Products"
     apps = [
         path
-        for path in products.glob("*-iphonesimulator/*.app")
-        if path.is_dir() and "UITests" not in path.name and not path.name.endswith("Runner.app")
+        for path in products.glob(require_configuration(configuration) + "-iphonesimulator/*.app")
+        if path.is_dir() and "UITests" not in path.name and not path.name.endswith("-Runner.app")
     ]
     if len(apps) != 1:
         raise PolicyError("product", "Expected one built app in DerivedData.")
@@ -346,8 +467,11 @@ def _require_disk(cfg) -> None:
 
 
 def main() -> int:
+    os.umask(0o077)
     try:
-        if os.environ.get("IOS_WORKER_DEV") != "1" and os.geteuid() != _uid("iosagent"):
+        from guest_guard import require_macos_guest
+        require_macos_guest()
+        if os.geteuid() != _uid("iosagent"):
             sys.stderr.write("worker must run as iosagent\n")
             return 2
         from containment import apply_rlimits

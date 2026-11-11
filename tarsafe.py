@@ -23,6 +23,8 @@ def extract_source(archive: Path, destination: Path, max_bytes: int) -> None:
             if not (member.isdir() or member.isfile()):
                 raise PolicyError("invalid_archive", "Archive members must be files or directories.")
             relative = Path(member.name)
+            if ".worker" in relative.parts:
+                raise PolicyError("invalid_archive", "The .worker directory is reserved for job runtime state.")
             if relative.is_absolute() or ".." in relative.parts:
                 raise PolicyError("invalid_archive", "Archive paths must stay inside the snapshot.")
             target = (root / relative).resolve()

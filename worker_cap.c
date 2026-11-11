@@ -1,5 +1,6 @@
 /*
- * Fixed privileged entry point. sudoers allows iosbroker to run this
+ * GUEST-ONLY reference helper. Do not install/grant sudo for it on the host.
+ * Fixed privileged entry point. Inside an isolated guest, sudoers can allow iosbroker to run this
  * binary as root with no arguments. It sets a 6 GB jetsam cap on its own
  * pid, permanently becomes iosagent, and execs the worker. It does not
  * read stdin, the environment, or argv beyond rejecting extra arguments.

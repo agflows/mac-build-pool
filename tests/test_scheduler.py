@@ -347,5 +347,76 @@ class SchedulerTest(unittest.TestCase):
             read_regular_file(exported, export, 100)
 
 
+    def test_preparation_requires_lease_and_counts_toward_build_queue(self):
+        revision = self._ready()
+        with self.assertRaises(PolicyError):
+            self.scheduler.submit_prepare(revision, "missing", "expo-ios", {})
+        lease = self.scheduler.acquire_lease()
+        self.scheduler.submit_prepare(revision, lease, "expo-ios", {})
+        self.scheduler.submit_build(revision, None, lease, boot_after=False)
+        with self.assertRaises(QueueFull):
+            self.scheduler.submit_build(revision, None, lease)
+
+    def test_preparation_waits_for_memory_approval_without_booting(self):
+        self.memory.sample = MemorySample(PRESSURE_URGENT, 0, 0)
+        job = self.scheduler.submit_prepare(self._ready(), self.scheduler.acquire_lease(), "expo-ios", {})
+        self.scheduler.step()
+        self.assertEqual(self.scheduler.get(job.id).status, "waiting_for_approval")
+        self.assertEqual(self.runner.probes, [])
+        self.scheduler.approve(job.id)
+        self.scheduler.step()
+        self._wait_idle(job.id)
+        self.assertEqual(self.runner.started, [("prepare", None)])
+        self.assertEqual(self.runner.shutdowns, [])
+
+    def test_build_waits_for_preparation_and_fails_if_it_failed(self):
+        revision = self._ready()
+        lease = self.scheduler.acquire_lease()
+        prep = self.scheduler.submit_prepare(revision, lease, "expo-ios", {})
+        build = self.scheduler.submit_build(revision, None, lease, boot_after=False)
+        sample = MemorySample(PRESSURE_NORMAL, 0, 0)
+        self.assertEqual(self.scheduler._admit(build, sample, None), "skip")
+        prep.status = "failed"
+        self.assertEqual(self.scheduler._admit(build, sample, None), "skip")
+        self.assertEqual(build.status, "failed")
+        self.assertEqual(build.error, "preparation failed")
+
+    def test_releasing_running_job_does_not_allow_overlapping_lease(self):
+        self.runner = FakeRunner(block=True)
+        self.addCleanup(self.runner.gate.set)
+        self.scheduler = self._scheduler()
+        revision = self._ready()
+        lease = self.scheduler.acquire_lease()
+        prep = self.scheduler.submit_prepare(revision, lease, "expo-ios", {})
+        self.scheduler.step()
+        self.assertTrue(self.runner.entered.wait(2))
+        self.scheduler.release_lease(lease)
+        with self.assertRaises(PolicyError):
+            self.scheduler.acquire_lease()
+        self.runner.gate.set()
+        self._wait_idle(prep.id)
+        self.assertTrue(self.scheduler.acquire_lease())
+
+    def test_automatic_boot_inherits_lease_and_is_cancelled_on_release(self):
+        lease = self.scheduler.acquire_lease()
+        job = self.scheduler.submit_build(self._ready(), None, lease)
+        self.scheduler.step()
+        self._wait_idle(job.id)
+        followup = self.scheduler.get(self.scheduler.get(job.id).followup_id)
+        self.assertEqual(followup.lease_id, lease)
+        self.scheduler.release_lease(lease)
+        self.assertEqual(self.scheduler.get(followup.id).status, "failed")
+
+
+    def test_controller_probe_failure_fails_job_instead_of_hanging(self):
+        from unittest.mock import patch
+        lease = self.scheduler.acquire_lease()
+        job, _ = self.scheduler.submit_launch(self._ready(), None, lease)
+        with patch.object(self.runner, "is_booted", side_effect=PolicyError("isolation_required", "controller missing")):
+            self.scheduler.step()
+        self.assertEqual(self.scheduler.get(job.id).status, "failed")
+        self.assertEqual(self.runner.started, [])
+
+
 if __name__ == "__main__":
     unittest.main()

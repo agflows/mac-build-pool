@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from containment import DISK_BUDGET, MEMORY_LIMIT
@@ -29,6 +29,8 @@ class WorkerConfig:
     max_upload_bytes: int = 64 * 1024 * 1024
     disk_budget: int = DISK_BUDGET
     memory_limit: int = MEMORY_LIMIT
+    allow_dependency_install: bool = False
+    toolchain: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -55,6 +57,12 @@ def load_worker_config(path: Path) -> WorkerConfig:
     deny = {normalize_udid(item) for item in data.get("device_denylist", [])}
     if not allow:
         raise PolicyError("bad_config", "device_allowlist is empty.")
+    enabled = data.get("allow_dependency_install", False)
+    toolchain = data.get("toolchain", {})
+    if not isinstance(enabled, bool) or not isinstance(toolchain, dict):
+        raise PolicyError("bad_config", "Invalid dependency preparation configuration.")
+    if any(not isinstance(k, str) or not isinstance(v, str) or "\x00" in v for k, v in toolchain.items()):
+        raise PolicyError("bad_config", "Toolchain entries must be path strings.")
     return WorkerConfig(
         workspace_root=Path(data["workspace_root"]),
         spool_root=Path(data["spool_root"]),
@@ -66,6 +74,8 @@ def load_worker_config(path: Path) -> WorkerConfig:
         max_upload_bytes=min(int(data.get("max_upload_bytes", 64 * 1024 * 1024)), 64 * 1024 * 1024),
         disk_budget=min(int(data.get("disk_budget_bytes", DISK_BUDGET)), DISK_BUDGET),
         memory_limit=min(int(data.get("memory_limit_bytes", MEMORY_LIMIT)), MEMORY_LIMIT),
+        allow_dependency_install=enabled,
+        toolchain=toolchain,
     )
 
 

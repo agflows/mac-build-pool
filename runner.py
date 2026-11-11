@@ -1,4 +1,9 @@
-"""Run a worker operation through the fixed root helper.
+"""Guest-only helper transport; NEVER the personal Mac host execution backend.
+
+The host broker uses IsolatedRunner instead. This remains a reference for a
+protected helper inside a disposable guest, not a host fallback.
+
+Run a worker operation through the fixed root helper.
 
 sudo is allowed to execute one argv and nothing else. The helper drops to
 iosagent before Python starts. The broker environment is not forwarded.
@@ -13,7 +18,7 @@ import signal
 import subprocess
 import time
 
-from containment import BROKER_ENV, BUILD_TIMEOUT, DEFAULT_TIMEOUT, LOG_CAP, STDOUT_CAP, SUDO_ARGV, TEST_TIMEOUT
+from containment import BROKER_ENV, BUILD_TIMEOUT, PREPARE_TIMEOUT, DEFAULT_TIMEOUT, LOG_CAP, STDOUT_CAP, SUDO_ARGV, TEST_TIMEOUT
 from policy import PolicyError, check_device
 
 IOSAGENT_USER = "iosagent"
@@ -51,11 +56,16 @@ class SudoRunner:
             "session_id": job.session_id,
             "device_id": job.device_id,
             "scheme": job.scheme,
+            "recipe": job.recipe,
+            "public_env": job.public_env,
+            "configuration": job.configuration,
+            "for_testing": job.for_testing,
             "artifact_id": job.artifact_id,
             "archive": job.archive,
             "approved": job.approved,
         }
-        timeout = BUILD_TIMEOUT if job.kind == "build" else TEST_TIMEOUT if job.kind == "uitest" else DEFAULT_TIMEOUT
+        timeout = {"prepare": PREPARE_TIMEOUT, "build": BUILD_TIMEOUT + 60, "uitest": TEST_TIMEOUT + 480,
+                   "launch": 600, "boot": 420, "screenshot": 480, "reset": 300}.get(job.kind, DEFAULT_TIMEOUT)
         return self._call(payload, timeout=timeout)
 
     def _call(self, payload: dict, timeout: int) -> dict:

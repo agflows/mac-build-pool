@@ -30,15 +30,16 @@ CODE = (
     "tarsafe.py",
     "containment.py",
     "worker_exec.py",
+    "workspace.py",
+    "guest_guard.py",
+    "cli.py",
     "runner.py",
+    "isolated_runner.py",
     "scheduler.py",
     "api.py",
     "broker.py",
     "audit.py",
 )
-ACL_READ = "iosagent allow read,execute,file_inherit,directory_inherit"
-ACL_WRITE = "iosagent allow read,write,execute,delete,add_file,add_subdirectory,file_inherit,directory_inherit"
-ACL_TRAVERSE = "iosagent allow search"
 
 
 def main() -> int:
@@ -55,17 +56,13 @@ def main() -> int:
 
 
 def _install(source: Path, scratch: Path) -> int:
+    # Upgrade only the named service; never kill arbitrary processes using a port.
+    subprocess.run(["/bin/launchctl", "bootout", "system/com.iosworker.broker"], check=False)
     _ensure_user()
     _install_code(source)
-    _install_helper(source)
-    _probe_jetsam(scratch)
     _install_data()
-    _install_sudoers(source, scratch)
-    _probe_launch()
+    _retire_native_host_launcher()
     _install_daemon(source)
-    _remove_shared_copy()
-    _free_port()
-    subprocess.run(["/bin/launchctl", "bootout", "system/com.iosworker.broker"], check=False)
     subprocess.run(["/bin/launchctl", "bootstrap", "system", str(PLIST_DST)], check=True)
     subprocess.run(["/bin/launchctl", "enable", "system/com.iosworker.broker"], check=False)
     subprocess.run(["/bin/launchctl", "kickstart", "-k", "system/com.iosworker.broker"], check=True)
@@ -101,6 +98,7 @@ def _install(source: Path, scratch: Path) -> int:
     print(f"token file: {BROKER_DIR / 'token'} (mode 600, value not printed)")
     print(f"operator token file: {BROKER_DIR / 'operator-token'} (mode 600, value not printed)")
     print("launchd: system/com.iosworker.broker UserName=iosbroker")
+    print("Host native execution is disabled. A reviewed isolation-executor must be installed separately.")
     return 0
 
 
@@ -198,112 +196,37 @@ def _install_code(source: Path) -> None:
         "max_upload_bytes": 64 * 1024 * 1024,
         "disk_budget_bytes": 20 * 1024 * 1024 * 1024,
         "memory_limit_bytes": 6 * 1024 * 1024 * 1024,
+        "allow_dependency_install": False,
+        "toolchain": {},
     }
     import json
 
     path = LIBRARY / "worker.json"
+    # Preserve owner decisions (including consent, toolchain paths and device IDs).
+    # Never upgrade by importing configuration writable by a job account.
+    if path.exists() or path.is_symlink():
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+            raise SystemExit("Existing worker.json must be a root-owned, non-writable regular file")
+        worker.update(json.loads(path.read_text()))
     path.write_text(json.dumps(worker, indent=2) + "\n")
     os.chown(path, 0, 0)
     path.chmod(0o644)
+    subprocess.run(["/bin/chmod", "-N", str(path)], check=True)
 
 
-def _install_helper(source: Path) -> None:
+def _retire_native_host_launcher() -> None:
+    """Remove this project\'s old host sudo grant; never replace it with a shell grant."""
+    if SUDOERS_DST.exists() or SUDOERS_DST.is_symlink():
+        info = SUDOERS_DST.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+            raise SystemExit("Refusing to remove an unexpected sudoers path")
+        SUDOERS_DST.unlink()
     binary = LIBRARY / "worker_cap"
-    compilers = ["/usr/bin/clang", "/usr/bin/cc"]
-    last = "compiler missing"
-    for compiler in compilers:
-        if not Path(compiler).exists():
-            continue
-        completed = subprocess.run(
-            [compiler, "-O2", "-Wall", "-Werror", "-o", str(binary), str(source / "worker_cap.c")],
-            capture_output=True,
-            text=True,
-        )
-        last = (completed.stderr or completed.stdout)[-400:]
-        if completed.returncode == 0:
-            os.chown(binary, 0, 0)
-            binary.chmod(0o755)
-            subprocess.run(["/bin/chmod", "-N", str(binary)], check=False)
-            return
-    raise SystemExit(last or "worker_cap compile failed")
-
-
-def _probe_jetsam(scratch: Path) -> None:
-    """Report which limits a root process can set and whether a child inherits them."""
-    probe = scratch / "jetsam-probe.py"
-    probe.write_text(
-        "import ctypes, os, resource\n"
-        "print('euid', os.geteuid(), flush=True)\n"
-        "for name in ('RLIMIT_AS', 'RLIMIT_DATA', 'RLIMIT_RSS', 'RLIMIT_NPROC'):\n"
-        "    limit = getattr(resource, name)\n"
-        "    value = 512 if name == 'RLIMIT_NPROC' else 6442450944\n"
-        "    try:\n"
-        "        resource.setrlimit(limit, (value, value))\n"
-        "        print(name, 'set', resource.getrlimit(limit), flush=True)\n"
-        "    except Exception as exc:\n"
-        "        print(name, type(exc).__name__, exc, flush=True)\n"
-        "read_fd, write_fd = os.pipe()\n"
-        "pid = os.fork()\n"
-        "if pid == 0:\n"
-        "    os.close(read_fd)\n"
-        "    text = 'child_as=%s child_nproc=%s\\n' % (resource.getrlimit(resource.RLIMIT_AS), resource.getrlimit(resource.RLIMIT_NPROC))\n"
-        "    os.write(write_fd, text.encode())\n"
-        "    os.close(write_fd)\n"
-        "    os._exit(0)\n"
-        "os.close(write_fd)\n"
-        "print(os.read(read_fd, 300).decode(), end='', flush=True)\n"
-        "os.close(read_fd)\n"
-        "os.waitpid(pid, 0)\n"
-        "class P(ctypes.Structure):\n"
-        "    _fields_ = [('a', ctypes.c_int32), ('aa', ctypes.c_uint32), ('i', ctypes.c_int32), ('ia', ctypes.c_uint32)]\n"
-        "libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)\n"
-        "props = P(6144, 1, 6144, 1)\n"
-        "rc = libc.memorystatus_control(7, os.getpid(), 0, ctypes.byref(props), ctypes.sizeof(props))\n"
-        "got = P()\n"
-        "libc.memorystatus_control(8, os.getpid(), 0, ctypes.byref(got), ctypes.sizeof(got))\n"
-        "read_fd, write_fd = os.pipe()\n"
-        "pid = os.fork()\n"
-        "if pid == 0:\n"
-        "    os.close(read_fd)\n"
-        "    child = P()\n"
-        "    libc.memorystatus_control(8, os.getpid(), 0, ctypes.byref(child), ctypes.sizeof(child))\n"
-        "    os.write(write_fd, ('jetsam set=%s self=%s child=%s\\n' % (rc, got.a, child.a)).encode())\n"
-        "    os.close(write_fd)\n"
-        "    os._exit(0)\n"
-        "os.close(write_fd)\n"
-        "print(os.read(read_fd, 200).decode(), end='', flush=True)\n"
-        "os.waitpid(pid, 0)\n"
-    )
-    completed = subprocess.run(["/usr/bin/python3", str(probe)], capture_output=True, text=True)
-    print(completed.stdout.strip() or completed.stderr.strip() or "limit probe produced no output")
-    probe.unlink(missing_ok=True)
-
-
-def _probe_launch() -> None:
-    payload = '{"op":"booted","device_id":"3C8BB98E-6383-446B-AF87-1E1282762A13"}'
-    completed = subprocess.run(
-        [
-            "/usr/bin/sudo",
-            "-n",
-            "-u",
-            "iosbroker",
-            "/usr/bin/sudo",
-            "-n",
-            "-u",
-            "root",
-            "/Library/ios-worker/worker_cap",
-        ],
-        input=payload,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    stdout = completed.stdout.strip().replace("\n", "")[:240]
-    stderr = completed.stderr.strip().replace("\n", " ")[-240:]
-    line = f"worker_cap rc={completed.returncode} out={stdout} err={stderr}"
-    print(line)
-    if completed.returncode != 0 or '"booted"' not in completed.stdout:
-        raise SystemExit("worker launch path failed")
+    if binary.exists() or binary.is_symlink():
+        if binary.is_symlink() or binary.lstat().st_uid != 0:
+            raise SystemExit("Refusing to remove an unexpected host helper")
+        binary.unlink()
 
 
 def _install_data() -> None:
@@ -311,13 +234,15 @@ def _install_data() -> None:
     DATA.mkdir(exist_ok=True)
     os.chown(DATA, uid, 20)
     DATA.chmod(0o700)
-    _acl(DATA, ACL_TRAVERSE)
-    for name, acl in (("work", ACL_WRITE), ("artifacts", ACL_WRITE), ("spool", ACL_READ), ("tmp", ACL_WRITE)):
+    # No native job account may traverse host staging. Only the broker/controller
+    # handles bounded transfer; all extraction and project work is guest-side.
+    subprocess.run(["/bin/chmod", "-N", str(DATA)], check=True)
+    for name in ("work", "artifacts", "spool", "tmp"):
         path = DATA / name
         path.mkdir(exist_ok=True)
         os.chown(path, uid, 20)
         path.chmod(0o700)
-        _acl(path, acl)
+        subprocess.run(["/bin/chmod", "-N", str(path)], check=True)
     export = DATA / "export"
     export.mkdir(exist_ok=True)
     os.chown(export, uid, 20)
@@ -382,22 +307,6 @@ def _read_secret(path: Path) -> str:
         os.close(fd)
 
 
-def _install_sudoers(source: Path, scratch: Path) -> None:
-    text = (source / "sudoers.fragment").read_text().splitlines()
-    rules = [line for line in text if line and not line.startswith("#")]
-    body = "\n".join(rules) + "\n"
-    temporary = scratch / "sudoers"
-    temporary.write_text(body)
-    temporary.chmod(0o440)
-    check = subprocess.run(["/usr/sbin/visudo", "-cf", str(temporary)], capture_output=True, text=True)
-    if check.returncode != 0:
-        raise SystemExit(check.stderr[-400:] or "sudoers check failed")
-    shutil.copyfile(temporary, SUDOERS_DST)
-    os.chown(SUDOERS_DST, 0, 0)
-    SUDOERS_DST.chmod(0o440)
-    temporary.unlink(missing_ok=True)
-
-
 def _install_daemon(source: Path) -> None:
     shutil.copyfile(source / "com.iosworker.broker.plist", PLIST_DST)
     os.chown(PLIST_DST, 0, 0)
@@ -405,26 +314,6 @@ def _install_daemon(source: Path) -> None:
     check = subprocess.run(["/usr/bin/plutil", "-lint", str(PLIST_DST)], capture_output=True, text=True)
     if check.returncode != 0:
         raise SystemExit(check.stderr[-400:] or "plist lint failed")
-
-
-def _remove_shared_copy() -> None:
-    shared = Path("/Users/Shared/ios-worker")
-    if shared.exists():
-        shutil.rmtree(shared)
-
-
-def _free_port() -> None:
-    completed = subprocess.run(["/usr/sbin/lsof", "-nP", "-iTCP:8741", "-sTCP:LISTEN", "-t"], capture_output=True, text=True)
-    for line in completed.stdout.split():
-        if line.isdigit():
-            subprocess.run(["/bin/kill", line], check=False)
-
-
-def _acl(path: Path, entry: str) -> None:
-    subprocess.run(["/bin/chmod", "-N", str(path)], check=False)
-    completed = subprocess.run(["/bin/chmod", "+a", entry, str(path)], capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise SystemExit(f"ACL failed for {path}: {completed.stderr.strip()}")
 
 
 def _user_exists(name: str) -> bool:

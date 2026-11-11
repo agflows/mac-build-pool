@@ -17,7 +17,7 @@ from typing import Callable, Optional
 from containment import DISK_BUDGET, LOG_CAP, MAX_ARTIFACT_BYTES, copy_regular_file
 from runner import WorkerFailure
 from memory import MemorySample, boot_needs_approval, build_needs_approval
-from policy import PolicyError, check_device, require_id, require_scheme, require_under
+from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_configuration, require_bool, require_recipe, require_public_env
 
 Clock = Callable[[], float]
 MemoryFn = Callable[[], MemorySample]
@@ -42,6 +42,10 @@ class Job:
     archive: Optional[str] = None
     lease_id: Optional[str] = None
     boot_after: bool = True
+    recipe: Optional[str] = None
+    public_env: dict = field(default_factory=dict)
+    configuration: str = "Debug"
+    for_testing: bool = True
     approved: bool = False
     followup_id: Optional[str] = None
     error: Optional[str] = None
@@ -114,7 +118,7 @@ class Scheduler:
 
     def acquire_lease(self) -> str:
         with self._lock:
-            if self.lease and self.lease.get("status") == "active":
+            if self.running_ids or (self.lease and self.lease.get("status") == "active"):
                 raise PolicyError("session_busy", "Another session holds the simulator.")
             lease_id = _new_id()
             self.lease = {"id": lease_id, "status": "active"}
@@ -132,12 +136,28 @@ class Scheduler:
                     job.error = "session released"
         self._wake.set()
 
-    def submit_build(self, revision_id: str, scheme: Optional[str], lease_id: str, boot_after: bool = True) -> Job:
+    def submit_prepare(self, revision_id: str, lease_id: str, recipe: str, public_env: dict, scheme: Optional[str] = None) -> Job:
+        require_id(revision_id, "revision")
+        job = Job(id=_new_id(), kind="prepare", revision_id=revision_id, lease_id=lease_id,
+                  recipe=require_recipe(recipe), public_env=require_public_env(public_env),
+                  scheme=require_scheme(scheme) if scheme is not None else None)
+        with self._lock:
+            self._require_lease_locked(lease_id)
+            if any(j.revision_id == revision_id and j.kind == "prepare" and j.status in ("queued", "running", "waiting_for_approval") for j in self.jobs.values()):
+                raise PolicyError("session_busy", "A preparation is already pending for this revision.")
+            self._put_locked(job)
+        self._wake.set()
+        return job
+
+    def submit_build(self, revision_id: str, scheme: Optional[str], lease_id: str, boot_after: bool = True,
+                     configuration: str = "Debug", for_testing: bool = True) -> Job:
         require_id(revision_id, "revision")
         if scheme is not None:
             require_scheme(scheme)
         if not isinstance(boot_after, bool):
             raise PolicyError("invalid_body", "bootSimulator must be a boolean.")
+        configuration = require_configuration(configuration)
+        for_testing = require_bool(for_testing, "forTesting")
         with self._lock:
             self._require_lease_locked(lease_id)
             job = Job(
@@ -148,17 +168,20 @@ class Scheduler:
                 device_id=self.default_device,
                 lease_id=lease_id,
                 boot_after=boot_after,
+                configuration=configuration,
+                for_testing=for_testing,
             )
             self._put_locked(job)
         self._wake.set()
         return job
 
-    def submit_launch(self, revision_id: str, device_id: Optional[str], lease_id: str) -> tuple[Job, str]:
+    def submit_launch(self, revision_id: str, device_id: Optional[str], lease_id: str, configuration: str = "Debug") -> tuple[Job, str]:
         device = self._device(device_id)
         session_id = _new_id()
         job = Job(
             id=_new_id(),
             kind="launch",
+            configuration=require_configuration(configuration),
             revision_id=require_id(revision_id, "revision"),
             session_id=session_id,
             device_id=device,
@@ -191,7 +214,7 @@ class Scheduler:
             self._require_lease_locked(session["lease_id"])
         return self._enqueue(job)
 
-    def submit_uitest(self, revision_id: str, scheme: Optional[str], device_id: Optional[str], lease_id: str) -> Job:
+    def submit_uitest(self, revision_id: str, scheme: Optional[str], device_id: Optional[str], lease_id: str, configuration: str = "Debug") -> Job:
         if scheme is not None:
             require_scheme(scheme)
         device = self._device(device_id)
@@ -201,6 +224,7 @@ class Scheduler:
             Job(
                 id=_new_id(),
                 kind="uitest",
+                configuration=require_configuration(configuration),
                 revision_id=require_id(revision_id, "revision"),
                 scheme=scheme,
                 device_id=device,
@@ -285,7 +309,15 @@ class Scheduler:
                     job = self.jobs[job_id]
                     if job.status not in ("queued", "waiting_for_approval"):
                         continue
-                    decision = self._admit(job, sample, previous)
+                    try:
+                        decision = self._admit(job, sample, previous)
+                    except Exception as exc:
+                        # A missing/crashed isolation controller must fail the job,
+                        # not leave it queued forever or trigger a native fallback.
+                        job.status = "failed"
+                        job.log = str(exc)[-LOG_CAP:]
+                        job.error = str(exc)[-300:] or exc.__class__.__name__
+                        continue
                     if decision == "skip":
                         continue
                     if decision == "wait":
@@ -303,7 +335,7 @@ class Scheduler:
                 sys.stderr.write("idle shutdown failed: " + exc.__class__.__name__ + "\n")
 
     def _admit(self, job: Job, sample: MemorySample, previous: Optional[MemorySample]) -> str:
-        if job.kind in ("build", "launch", "uitest"):
+        if job.kind in ("prepare", "build", "launch", "uitest"):
             revision = self.revisions.get(job.revision_id or "")
             if revision is None:
                 job.status = "failed"
@@ -315,6 +347,16 @@ class Scheduler:
                 return "skip"
             if revision["status"] != "ready":
                 return "skip"
+            if job.kind in ("build", "launch", "uitest"):
+                preparations = [j for j in self.jobs.values() if j.kind == "prepare" and j.revision_id == job.revision_id]
+                if preparations:
+                    prep = preparations[-1]
+                    if prep.status == "failed":
+                        job.status = "failed"
+                        job.error = "preparation failed"
+                        return "skip"
+                    if prep.status != "succeeded":
+                        return "skip"
         if job.lease_id and not self._lease_active(job.lease_id):
             job.status = "failed"
             job.error = "session released"
@@ -333,7 +375,7 @@ class Scheduler:
                 return "skip"
         if self._needs_boot(job) and boot_needs_approval(previous, sample, job.approved):
             return "wait"
-        if job.kind == "build" and build_needs_approval(previous, sample, job.approved):
+        if job.kind in ("prepare", "build", "uitest") and build_needs_approval(previous, sample, job.approved):
             return "wait"
         return "allow"
 
@@ -377,7 +419,7 @@ class Scheduler:
                 if current.kind == "ingest" and current.revision_id in self.revisions:
                     self.revisions[current.revision_id]["status"] = "ready"
                 if current.kind == "build" and current.device_id and current.boot_after:
-                    current.followup_id = self._queue_restart_locked(current.device_id)
+                    current.followup_id = self._queue_restart_locked(current.device_id, current.lease_id)
                 current.status = "succeeded"
         except Exception as exc:
             with self._lock:
@@ -439,7 +481,7 @@ class Scheduler:
         self._wake.set()
         return job
 
-    def _queue_restart_locked(self, device_id: str) -> Optional[str]:
+    def _queue_restart_locked(self, device_id: str, lease_id: Optional[str]) -> Optional[str]:
         try:
             device_id = check_device(device_id, self.allowlist, self.denylist)
         except PolicyError:
@@ -447,7 +489,7 @@ class Scheduler:
         for item in self.jobs.values():
             if item.kind == "boot" and item.device_id == device_id and item.status in ("queued", "waiting_for_approval", "running"):
                 return item.id
-        job = Job(id=_new_id(), kind="boot", device_id=device_id)
+        job = Job(id=_new_id(), kind="boot", device_id=device_id, lease_id=lease_id)
         try:
             self._put_locked(job)
         except QueueFull:
@@ -462,7 +504,7 @@ class Scheduler:
         )
         if pending >= self.max_pending_jobs:
             raise QueueFull("job queue is full")
-        if job.kind == "build" and self._open_builds() >= self.max_build_jobs:
+        if job.kind in ("prepare", "build") and self._open_builds() >= self.max_build_jobs:
             raise QueueFull("build queue is full")
         self.jobs[job.id] = job
         self.order.append(job.id)
@@ -513,6 +555,10 @@ class Scheduler:
             archive=job.archive,
             lease_id=job.lease_id,
             boot_after=job.boot_after,
+            recipe=job.recipe,
+            public_env=dict(job.public_env),
+            configuration=job.configuration,
+            for_testing=job.for_testing,
             approved=job.approved,
             followup_id=job.followup_id,
             error=job.error,
@@ -525,7 +571,7 @@ class Scheduler:
         return sum(
             1
             for job in self.jobs.values()
-            if job.kind == "build" and job.status in ("queued", "waiting_for_approval", "running")
+            if job.kind in ("prepare", "build") and job.status in ("queued", "waiting_for_approval", "running")
         )
 
     def run_forever(self, stop: threading.Event) -> None:

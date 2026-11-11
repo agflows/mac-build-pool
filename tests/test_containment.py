@@ -133,5 +133,22 @@ class ContainmentTest(unittest.TestCase):
             SudoRunner({WORKER}, set(), argv=["/bin/sh"])
 
 
+    def test_prepare_runner_passes_only_structured_inputs_and_deadline(self):
+        from unittest.mock import patch
+        from scheduler import Job
+        from containment import PREPARE_TIMEOUT
+        runner = SudoRunner({WORKER}, set())
+        job = Job(id="job1", kind="prepare", revision_id="rev1", recipe="expo-ios",
+                  public_env={"EXPO_PUBLIC_API_URL": "https://example.test"})
+        with patch.object(runner, "_call", return_value={"ok": True}) as call:
+            runner.run(job)
+        payload = call.call_args.args[0]
+        self.assertEqual(payload["recipe"], "expo-ios")
+        self.assertEqual(payload["public_env"], job.public_env)
+        self.assertEqual(call.call_args.kwargs["timeout"], PREPARE_TIMEOUT)
+        self.assertNotIn("token", payload)
+        self.assertNotIn("command", payload)
+
+
 if __name__ == "__main__":
     unittest.main()

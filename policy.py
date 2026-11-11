@@ -58,6 +58,35 @@ def check_device(device_id: str, allowlist: set[str], denylist: set[str]) -> str
     return udid
 
 
+def require_recipe(value: object) -> str:
+    if value not in ("expo-ios", "flutter-ios", "swift-ios"):
+        raise PolicyError("invalid_recipe", "Recipe must be expo-ios, flutter-ios or swift-ios.")
+    return value
+
+
+def require_configuration(value: object) -> str:
+    if value not in ("Debug", "Release"):
+        raise PolicyError("invalid_configuration", "Configuration must be Debug or Release.")
+    return value
+
+
+def require_bool(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise PolicyError("invalid_body", label + " must be a boolean.")
+    return value
+
+
+def require_public_env(value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or len(value) > 32:
+        raise PolicyError("invalid_environment", "publicEnv must contain at most 32 EXPO_PUBLIC_ variables.")
+    for key, text in value.items():
+        if not isinstance(key, str) or not re.fullmatch(r"EXPO_PUBLIC_[A-Z0-9_]{1,80}", key):
+            raise PolicyError("invalid_environment", "Only EXPO_PUBLIC_ variables may be supplied.")
+        if not isinstance(text, str) or len(text) > 4096 or "\x00" in text:
+            raise PolicyError("invalid_environment", "Public environment values must be short strings without NUL.")
+    return dict(value)
+
+
 def require_under(path: Path, root: Path) -> Path:
     """Resolve path and require it stay inside root, after following links."""
     root_resolved = root.resolve()

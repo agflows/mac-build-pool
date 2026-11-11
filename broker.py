@@ -26,7 +26,7 @@ from api import App, serve
 from config import BROKER_DIR, TAILSCALE_NET, load_broker_config, validate_listen
 from containment import LIBRARY_ROOT, TEMP_ROOT, apply_rlimits, directory_size, install_import_path, launch_path_problems
 from memory import sample_system
-from runner import SudoRunner
+from isolated_runner import IsolatedRunner
 from scheduler import Scheduler
 
 install_import_path()
@@ -59,7 +59,7 @@ def make_app(cfg):
     operator_token = _read_secret(cfg.operator_token_file, "operator token")
     if hmac.compare_digest(token.encode(), operator_token.encode()):
         raise SystemExit("operator token must be different from the agent token")
-    runner = SudoRunner(cfg.worker.device_allowlist, cfg.worker.device_denylist)
+    runner = IsolatedRunner(cfg.worker.device_allowlist, cfg.worker.device_denylist)
     default_device = sorted(cfg.worker.device_allowlist)[0]
     roots = [cfg.worker.workspace_root, cfg.worker.spool_root, cfg.worker.artifact_root, TEMP_ROOT]
     export_root = cfg.worker.artifact_root.parent / "export"
@@ -123,8 +123,6 @@ def tailscale_ipv4() -> str:
 
 
 def require_broker_account() -> None:
-    if os.environ.get("IOS_WORKER_DEV") == "1":
-        return
     if os.geteuid() == 0:
         raise SystemExit("refusing to run the API as root")
     try:
@@ -138,8 +136,7 @@ def require_broker_account() -> None:
 def main(argv: list[str]) -> int:
     os.umask(0o077)
     require_broker_account()
-    if os.environ.get("IOS_WORKER_DEV") != "1":
-        apply_rlimits()
+    apply_rlimits()
     if Path(__file__).resolve().parent == LIBRARY_ROOT:
         problems = launch_path_problems(LIBRARY_ROOT)
         if problems:
@@ -162,7 +159,7 @@ def main(argv: list[str]) -> int:
     httpd = serve(app, host, cfg.listen_port)
     print(
         f"listening on {host}:{cfg.listen_port} as uid {os.geteuid()}. "
-        "Build scripts run as iosagent. The token is not in that account.",
+        "Project execution requires the isolated executor; native host fallback is disabled.",
         flush=True,
     )
     try:

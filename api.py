@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from containment import DISK_BUDGET, MAX_ARTIFACT_BYTES, read_regular_file
-from policy import PolicyError, require_id
+from policy import PolicyError, require_id, require_configuration, require_bool, require_recipe, require_public_env
 from scheduler import QueueFull
 
 JSON = "application/json"
@@ -89,6 +89,11 @@ class Handler(BaseHTTPRequestHandler):
             elif not authorized(header, app.token):
                 self._json(401, {"error": "unauthorized"})
                 return
+            if method == "POST" and segments in (["v1", "sources"], ["v1", "leases"], ["v1", "preparations"],
+                                                   ["v1", "builds"], ["v1", "sessions"], ["v1", "tests"], ["v1", "reset"]):
+                installed = getattr(app.scheduler.runner, "installed", None)
+                if installed is not None and not installed():
+                    raise PolicyError("isolation_required", "A reviewed isolated executor is required; native host execution is disabled.")
             body = self._read_body(app, segments, method)
             status, payload, content_type = dispatch(app, method, segments, body, self.headers.get("Content-Type", ""))
             if content_type == JSON:
@@ -137,7 +142,9 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
     scheduler = app.scheduler
     if method == "GET" and segments == ["v1", "health"]:
         counts = scheduler.counts()
-        return 200, {"ok": True, "pressure": scheduler.pressure_name(), **counts}, JSON
+        installed = getattr(scheduler.runner, "installed", lambda: False)()
+        return 200, {"ok": True, "executionMode": "isolated-only", "executorInstalled": installed,
+                     "pressure": scheduler.pressure_name(), **counts}, JSON
     if method == "POST" and segments == ["v1", "sources"]:
         return accept_source(app, body, content_type)
     if method == "POST" and segments == ["v1", "leases"]:
@@ -145,6 +152,13 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
     if method == "POST" and len(segments) == 4 and segments[:2] == ["v1", "leases"] and segments[3] == "release":
         scheduler.release_lease(require_id(segments[2], "lease"))
         return 200, {"released": True}, JSON
+    if method == "POST" and segments == ["v1", "preparations"]:
+        data = read_json(body)
+        job = scheduler.submit_prepare(
+            require_id(data.get("revisionId"), "revision"), require_lease(data),
+            require_recipe(data.get("recipe")), require_public_env(data.get("publicEnv", {})), optional_scheme(data),
+        )
+        return 202, job_view(job), JSON
     if method == "POST" and segments == ["v1", "builds"]:
         data = read_json(body)
         job = scheduler.submit_build(
@@ -152,6 +166,8 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
             optional_scheme(data),
             require_lease(data),
             boot_after(data),
+            require_configuration(data.get("configuration", "Debug")),
+            require_bool(data.get("forTesting", True), "forTesting"),
         )
         return 202, job_view(job), JSON
     if method == "POST" and segments == ["v1", "sessions"]:
@@ -161,6 +177,7 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
             require_id(data.get("revisionId"), "revision"),
             device,
             require_lease(data),
+            require_configuration(data.get("configuration", "Debug")),
         )
         view = job_view(job)
         view["sessionId"] = session_id
@@ -173,6 +190,7 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
             optional_scheme(data),
             device,
             require_lease(data),
+            require_configuration(data.get("configuration", "Debug")),
         )
         return 202, job_view(job), JSON
     if method == "POST" and segments == ["v1", "reset"]:
@@ -245,6 +263,9 @@ def job_view(job) -> dict:
         "artifactId": job.artifact_id,
         "followupJobId": job.followup_id,
         "leaseId": job.lease_id,
+        "recipe": job.recipe,
+        "configuration": job.configuration,
+        "forTesting": job.for_testing,
         "exitCode": job.exit_code,
         "error": job.error,
     }
@@ -328,6 +349,8 @@ def authorized(header: str, token: str) -> bool:
 
 
 def status_for(exc: PolicyError) -> int:
+    if exc.code in {"isolation_required", "unsafe_executor"}:
+        return 503
     if exc.code in {"personal_simulator", "device_not_allowed"}:
         return 403
     if exc.code == "too_large":
