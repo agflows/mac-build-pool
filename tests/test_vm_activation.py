@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from containment import CODE_FILES
+from install_system import CODE
 from policy import PolicyError
 from vm_runner import TartRunner
 
@@ -19,6 +21,9 @@ class ActivationTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('install_tart_controller', script)
         self.installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.installer)
+
+    def test_installer_copies_every_protected_code_file(self):
+        self.assertCountEqual(CODE, CODE_FILES)
 
     def test_activation_rejects_a_report_for_another_configuration(self):
         installer = self.installer
