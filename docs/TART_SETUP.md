@@ -12,7 +12,8 @@ non-admin `iosvm` account. Guest projects run as a different non-admin `iosagent
 inside macOS. There is no native fallback. Developer signing and USB stay off.
 
 Acquiring a lease reserves one guest and queues its startup after resource
-admission. `bootSimulator: true` also starts the guest's mapped simulator. A lease
+admission. `bootSimulator: true` also starts the guest's mapped simulator and
+returns a session ID for screenshots and logs without a project build. A lease
 lasts at most 300 seconds per renewal, with a two-hour absolute limit. Renew while
 working or interacting with the simulator; job completion alone does not end a
 lease. Release or expiry stops and deletes its disposable APFS clone. An expired

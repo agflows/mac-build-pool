@@ -8,6 +8,7 @@ test_personal_simulator_is_forbidden (test_api.ApiTest) ... ok
 test_preparation_requires_lease_and_accepts_only_named_recipe (test_api.ApiTest) ... ok
 test_release_build_options_are_validated_and_forwarded (test_api.ApiTest) ... ok
 test_second_lease_is_rejected (test_api.ApiTest) ... ok
+test_simulator_only_lease_exposes_a_screenshot_session (test_api.ApiTest) ... ok
 test_source_over_the_disk_budget_is_rejected (test_api.ApiTest) ... ok
 test_source_upload_returns_an_id_not_a_path (test_api.ApiTest) ... ok
 test_third_build_returns_queue_full (test_api.ApiTest) ... ok
@@ -78,6 +79,7 @@ test_recipe_runs_locked_install_prebuild_and_pods_in_order (test_preparation.Pre
 test_runtime_directory_symlink_is_rejected (test_preparation.PreparationTest) ... ok
 test_sandbox_flag_fails_closed (test_preparation.PreparationTest) ... ok
 test_source_cannot_upload_preparation_state (test_preparation.PreparationTest) ... ok
+test_swift_build_reuses_prepared_package_checkouts (test_preparation.PreparationTest) ... ok
 test_swift_recipe_needs_no_node_ruby_or_flutter (test_preparation.PreparationTest) ... ok
 test_toolchain_with_no_worker_write_access_is_accepted (test_preparation.PreparationTest) ... ok
 test_unknown_recipe_does_not_execute (test_preparation.PreparationTest) ... ok
@@ -150,6 +152,6 @@ test_warning_does_not_boot_until_approved (test_worker.WorkerGuardTest) ... ok
 test_worker_config_rejects_a_token (test_worker.WorkerGuardTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 150 tests in 8.498s
+Ran 152 tests in 8.612s
 
 OK

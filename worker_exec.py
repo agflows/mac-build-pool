@@ -159,10 +159,10 @@ def prepare(request: dict, cfg, commands: Commands) -> dict:
         # Flutter's config-only build processes plugins/Pods (or SwiftPM) itself.
     else:
         project = _find_project(revision)
-        scheme = _scheme(request, project, commands)
+        package_args = _swift_package_args(revision)
+        scheme = _scheme(request, project, commands, package_args)
         steps = [("resolve Swift packages", [commands.xcodebuild, _project_flag(project), str(project),
-                  "-scheme", scheme, "-resolvePackageDependencies", "-onlyUsePackageVersionsFromResolvedFile",
-                  "-clonedSourcePackagesDirPath", str(revision / ".worker/cache/swift-packages")])]
+                  "-scheme", scheme, "-resolvePackageDependencies", *package_args])]
 
     deadline = time.monotonic() + PREPARE_TIMEOUT - 30
     log = ""
@@ -204,9 +204,9 @@ def build(request: dict, cfg, commands: Commands) -> dict:
     if is_flutter_project(revision) and configuration != "Debug":
         raise PolicyError("invalid_configuration", "Flutter iOS simulator builds use Debug mode.")
     for_testing = require_bool(request.get("for_testing", True), "forTesting")
-    _configure_project_commands(revision, cfg, commands)
+    package_args = _configure_project_commands(revision, cfg, commands)
     project = _find_project(revision)
-    scheme = _scheme(request, project, commands)
+    scheme = _scheme(request, project, commands, package_args)
     derived = require_under(revision / "DerivedData", cfg.workspace_root)
     argv = [
         commands.xcodebuild,
@@ -221,6 +221,7 @@ def build(request: dict, cfg, commands: Commands) -> dict:
         _destination(request, cfg),
         "-derivedDataPath",
         str(derived),
+        *package_args,
         "-jobs",
         "1",
         "ONLY_ACTIVE_ARCH=YES",
@@ -277,8 +278,8 @@ def uitest(request: dict, cfg, commands: Commands, memory) -> dict:
     revision = _revision(request, cfg)
     configuration = require_configuration(request.get("configuration", "Debug"))
     project = _find_project(revision)
-    _configure_project_commands(revision, cfg, commands)
-    scheme = _scheme(request, project, commands)
+    package_args = _configure_project_commands(revision, cfg, commands)
+    scheme = _scheme(request, project, commands, package_args)
     ensure_booted(device, bool(request.get("approved")), cfg, commands, memory)
     derived = require_under(revision / "DerivedData", cfg.workspace_root)
     argv = [
@@ -296,6 +297,7 @@ def uitest(request: dict, cfg, commands: Commands, memory) -> dict:
         f"platform=iOS Simulator,id={device},arch=arm64",
         "-derivedDataPath",
         str(derived),
+        *package_args,
         "-jobs",
         "1",
     ]
@@ -377,14 +379,22 @@ def _destination(request: dict, cfg) -> str:
     return f"platform=iOS Simulator,id={_device(request, cfg)},arch=arm64"
 
 
-def _configure_project_commands(revision: Path, cfg, commands: Commands) -> None:
-    if is_expo_project(revision) or is_flutter_project(revision) or (revision / ".worker/prepared.json").exists():
+def _swift_package_args(revision: Path) -> tuple[str, ...]:
+    return ("-onlyUsePackageVersionsFromResolvedFile", "-skipPackageUpdates",
+            "-clonedSourcePackagesDirPath", str(revision / ".worker/cache/swift-packages"))
+
+
+def _configure_project_commands(revision: Path, cfg, commands: Commands) -> tuple[str, ...]:
+    generated = is_expo_project(revision) or is_flutter_project(revision)
+    prepared = (revision / ".worker/prepared.json").exists()
+    if generated or prepared:
         commands.env = load_prepared_env(revision, cfg)
         # CoreSimulator/Xcode need the actual account home to find its devices.
         # Package caches remain job-local; only installers use the synthetic HOME.
         commands.env["HOME"] = "/Users/iosagent"
         commands.env.pop("CFFIXED_USER_HOME", None)
         commands.cwd = revision
+    return _swift_package_args(revision) if prepared and not generated else ()
 
 
 def _project_flag(project: Path) -> str:
@@ -406,11 +416,12 @@ def _find_project(revision: Path) -> Path:
     raise PolicyError("project", "Expected an Xcode project/workspace at root or one directory below. Expo projects must be prepared first.")
 
 
-def _scheme(request: dict, project: Path, commands: Commands) -> str:
+def _scheme(request: dict, project: Path, commands: Commands, package_args: tuple[str, ...] = ()) -> str:
     requested = request.get("scheme")
     if requested:
         requested = require_scheme(requested)
-    completed = commands.run([commands.xcodebuild, _project_flag(project), str(project), "-list", "-json"], timeout=60)
+    completed = commands.run([commands.xcodebuild, _project_flag(project), str(project), "-list", "-json",
+                              *package_args], timeout=60)
     _check(completed, "xcodebuild -list failed")
     listing = json.loads(completed.stdout.decode("utf-8"))
     section = "workspace" if project.suffix == ".xcworkspace" else "project"

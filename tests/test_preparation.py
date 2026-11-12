@@ -234,6 +234,22 @@ class PreparationTest(unittest.TestCase):
         self.assertIn("-onlyUsePackageVersionsFromResolvedFile", argv)
         self.assertNotIn("NODE_BINARY", self.commands.calls[-1][2])
 
+    def test_swift_build_reuses_prepared_package_checkouts(self):
+        (self.revision / "package.json").unlink()
+        (self.revision / "Simple.xcodeproj").mkdir()
+        prepare({"recipe": "swift-ios", "revision_id": "rev1"}, self.cfg, self.commands)
+        self.commands.calls.clear()
+        result = build({"revision_id": "rev1", "scheme": "CoupleJoy", "device_id": WORKER},
+                       self.cfg, self.commands)
+        xcode_calls = [argv for argv, _, _, _ in self.commands.calls if argv[0] == self.commands.xcodebuild]
+        self.assertEqual(len(xcode_calls), 2)
+        for argv in xcode_calls:
+            index = argv.index("-clonedSourcePackagesDirPath")
+            self.assertEqual(argv[index + 1], str(self.revision / ".worker/cache/swift-packages"))
+            self.assertIn("-onlyUsePackageVersionsFromResolvedFile", argv)
+            self.assertIn("-skipPackageUpdates", argv)
+        self.assertEqual(result["exitCode"], 0)
+
     def test_flutter_uses_private_sdk_and_locked_pub_get(self):
         (self.revision / "pubspec.yaml").write_text("name: app\\n")
         (self.revision / "pubspec.lock").write_text("packages: {}\\n")

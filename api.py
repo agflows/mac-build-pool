@@ -159,8 +159,9 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
     if method == "POST" and segments == ["v1", "leases"]:
         data=read_json(body)
         lease_id=scheduler.acquire_lease(data.get('ttl',300),data.get('bootSimulator',False))
-        return 201, {"leaseId":lease_id,"expiresIn":data.get('ttl',300),
-                     **({'startJobId':scheduler.lease['startJobId']} if 'startJobId' in scheduler.lease else {})}, JSON
+        lease=scheduler.lease
+        metadata={key:lease[key] for key in ('startJobId','sessionId') if key in lease}
+        return 201, {"leaseId":lease_id,"expiresIn":data.get('ttl',300),**metadata}, JSON
     if method == "POST" and len(segments)==4 and segments[:2]==["v1","leases"] and segments[3]=='renew':
         data=read_json(body)
         return 200,scheduler.renew_lease(require_id(segments[2],'lease'),data.get('ttl',300)),JSON

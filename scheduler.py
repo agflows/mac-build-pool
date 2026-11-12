@@ -131,10 +131,20 @@ class Scheduler:
             self.lease = {"id": lease_id, "status": "active", "expires": self.clock()+ttl,
                           "hard_deadline":self.clock()+7200}
             if getattr(self.runner,'vm_backend',False):
+                session_id = _new_id() if boot_simulator else None
                 job=Job(id=_new_id(),kind='boot' if boot_simulator else 'vm_start',
-                        device_id=self.default_device if boot_simulator else None,lease_id=lease_id)
+                        device_id=self.default_device if boot_simulator else None,lease_id=lease_id,
+                        session_id=session_id)
                 self._put_locked(job)
                 self.lease['startJobId']=job.id
+                if session_id:
+                    self.sessions[session_id] = {
+                        "job_id": job.id,
+                        "device_id": self.default_device,
+                        "revision_id": None,
+                        "lease_id": lease_id,
+                    }
+                    self.lease['sessionId'] = session_id
                 self._wake.set()
             return lease_id
 

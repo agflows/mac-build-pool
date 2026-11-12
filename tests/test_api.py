@@ -122,6 +122,23 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(json.loads(payload)["error"], "session_busy")
 
+    def test_simulator_only_lease_exposes_a_screenshot_session(self) -> None:
+        self.runner.vm_backend = True
+        status, payload = self._request("POST", "/v1/leases", b'{"bootSimulator":true}')
+        self.assertEqual(status, 201)
+        lease = json.loads(payload)
+        start = self.scheduler.get(lease["startJobId"])
+        self.assertEqual(start.kind, "boot")
+        self.assertEqual(start.device_id, WORKER)
+        screenshot = f'/v1/sessions/{lease["sessionId"]}/screenshot'
+        status, payload = self._request("POST", screenshot, b"{}")
+        self.assertEqual(status, 202)
+        job = self.scheduler.get(json.loads(payload)["jobId"])
+        self.assertEqual(job.lease_id, lease["leaseId"])
+        self.assertIsNone(job.revision_id)
+        self.assertEqual(self._request("POST", f'/v1/leases/{lease["leaseId"]}/release', b"{}")[0], 200)
+        self.assertEqual(self._request("POST", screenshot, b"{}")[0], 409)
+
     def test_third_build_returns_queue_full(self) -> None:
         body = json.dumps({"revisionId": "rev0001", "leaseId": self._lease()}).encode()
         self.assertEqual(self._request("POST", "/v1/builds", body)[0], 202)
