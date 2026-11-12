@@ -27,13 +27,15 @@ from config import BROKER_DIR, TAILSCALE_NET, load_broker_config, validate_liste
 from containment import LIBRARY_ROOT, TEMP_ROOT, apply_rlimits, directory_size, install_import_path, launch_path_problems
 from memory import sample_system
 from isolated_runner import IsolatedRunner
-from execution_policy import execution_mode, NATIVE, require_native_config
+from execution_policy import execution_mode, NATIVE, require_native_config, require_protected_file
 from native_runner import NativeUserRunner
 from policy import PolicyError
 from vm_runner import TartRunner, CONFIG as VM_CONFIG
 from scheduler import Scheduler
 
 install_import_path()
+
+PEER_TRIAL_CONFIG = LIBRARY_ROOT / "peer-trial.json"
 
 
 def _read_secret(path: Path, label: str) -> str:
@@ -111,7 +113,7 @@ def listen_host(cfg) -> str:
     return host
 
 
-def agent_instructions(cfg, app, runner) -> str:
+def agent_instructions(cfg, app, runner, *, trial_peer=None) -> str:
     if runner.validation_mode:
         cfg = load_broker_config(BROKER_DIR / "broker.json")
         token = _read_secret(cfg.token_file, "agent token")
@@ -120,8 +122,11 @@ def agent_instructions(cfg, app, runner) -> str:
     host = listen_host(cfg)
     if ipaddress.ip_address(host) not in TAILSCALE_NET:
         raise ValueError("Agent instructions require a Tailscale address")
-    ready = not runner.validation_mode and runner.installed()
-    state = "Remote jobs are enabled." if ready else "Remote jobs are disabled. Wait for the owner to enable them."
+    state = "Remote jobs are disabled. Wait for the owner to enable them."
+    if trial_peer is not None and runner.installed():
+        state = f"Remote trial jobs are enabled for {trial_peer}."
+    elif not runner.validation_mode and runner.installed():
+        state = "Remote jobs are enabled."
     return "\n".join((
         "Use agflows/mac-build-pool from a machine on the same Tailscale network.",
         f"IOS_WORKER_URL=http://{host}:{cfg.listen_port}",
@@ -130,6 +135,47 @@ def agent_instructions(cfg, app, runner) -> str:
         "Save the token in a private file (mode 600) and set IOS_WORKER_TOKEN_FILE to its path.",
         "Run python3 cli.py health first. Use one lease per session, renew it while working, and release it when done.",
     ))
+
+
+def load_trial_peer(path: Path) -> str:
+    require_protected_file(path)
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict) or set(data) != {"peer"} or not isinstance(data["peer"], str):
+        raise SystemExit("The trial requires exactly one owner-approved Tailscale peer.")
+    try:
+        peer = ipaddress.IPv4Address(data["peer"])
+    except ipaddress.AddressValueError as exc:
+        raise SystemExit("The trial peer must have a Tailscale IPv4 address.") from exc
+    if peer not in TAILSCALE_NET:
+        raise SystemExit("The trial peer must have a Tailscale IPv4 address.")
+    return str(peer)
+
+
+def start_peer_trial(app, scheduler, peer):
+    runner = scheduler.runner
+    if not isinstance(runner, TartRunner) or not runner.validation_mode or not runner.installed():
+        raise SystemExit("The peer trial requires the installed isolated validation worker.")
+    cfg = load_broker_config(BROKER_DIR / "broker.json")
+    host = listen_host(cfg)
+    validate_listen(host, allow_loopback=False)
+    token = _read_secret(cfg.token_file, "agent token")
+    if hmac.compare_digest(token.encode(), app.operator_token.encode()):
+        raise SystemExit("The agent token must be different from the validation operator token.")
+    peer_app = App(
+        scheduler,
+        token,
+        app.operator_token,
+        app.spool_root,
+        False,
+        app.max_upload_bytes,
+        disk_used=app.disk_used,
+        disk_budget=app.disk_budget,
+        trial_peer=peer,
+    )
+    httpd = serve(peer_app, host, cfg.listen_port)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    print(f"Isolated trial listening on {host}:{cfg.listen_port} for {peer}.", flush=True)
+    return httpd
 
 
 def tailscale_ipv4() -> str:
@@ -184,31 +230,42 @@ def main(argv: list[str]) -> int:
         print()
         return 0
     config_path = Path(argv[1]) if len(argv) > 1 else BROKER_DIR / "broker.json"
+    trial_peer = None
+    if len(argv) > 2:
+        if argv[2:] != ["--peer-trial"] or config_path != BROKER_DIR / "validation.json":
+            raise SystemExit("Peer trial is available only with the installed validation configuration.")
+        trial_peer = load_trial_peer(PEER_TRIAL_CONFIG)
     cfg = load_broker_config(config_path)
     host = listen_host(cfg)
     app, scheduler = make_app(cfg)
-    if getattr(scheduler.runner, 'vm_backend', False):
-        from owner_menu import start as start_owner_menu
+    with serve(app, host, cfg.listen_port) as httpd:
+        peer_httpd = start_peer_trial(app, scheduler, trial_peer) if trial_peer is not None else None
+        stop = threading.Event()
         try:
-            start_owner_menu(
-                scheduler,
-                validation=scheduler.runner.validation_mode,
-                instructions=lambda: agent_instructions(cfg, app, scheduler.runner),
+            if getattr(scheduler.runner, 'vm_backend', False):
+                from owner_menu import start as start_owner_menu
+                try:
+                    start_owner_menu(
+                        scheduler,
+                        validation=scheduler.runner.validation_mode,
+                        instructions=lambda: agent_instructions(cfg, app, scheduler.runner, trial_peer=trial_peer),
+                    )
+                except (OSError, ValueError, KeyError, PolicyError) as exc:
+                    sys.stderr.write(f"Owner menu unavailable: {type(exc).__name__}\n")
+            threading.Thread(target=scheduler.run_forever, args=(stop,), daemon=True).start()
+            print(
+                f"listening on {host}:{cfg.listen_port} as uid {os.geteuid()}. "
+                f"Execution mode: {getattr(scheduler.runner, 'execution_mode', 'isolated-only')}. No automatic backend fallback.",
+                flush=True,
             )
-        except (OSError, ValueError, KeyError, PolicyError) as exc:
-            sys.stderr.write(f"Owner menu unavailable: {type(exc).__name__}\n")
-    stop = threading.Event()
-    threading.Thread(target=scheduler.run_forever, args=(stop,), daemon=True).start()
-    httpd = serve(app, host, cfg.listen_port)
-    print(
-        f"listening on {host}:{cfg.listen_port} as uid {os.geteuid()}. "
-        f"Execution mode: {getattr(scheduler.runner, 'execution_mode', 'isolated-only')}. No automatic backend fallback.",
-        flush=True,
-    )
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        stop.set()
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            stop.set()
+            if peer_httpd is not None:
+                peer_httpd.shutdown()
+                peer_httpd.server_close()
     return 0
 
 

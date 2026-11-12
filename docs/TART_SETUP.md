@@ -109,6 +109,14 @@ controller. Root-owned code and image identity checks fail closed after changes.
 When a reviewed, project-free image supersedes the installed base, use
 `--replace-base` while the controller is idle and its lease guests are gone.
 
+The owner can opt in to a single-peer remote trial by adding `--peer-trial`
+after the validation configuration path in its launch arguments. The protected
+`/Library/ios-worker/peer-trial.json` names one Tailscale IPv4 address in
+the `peer` field. The trial uses the regular Tailscale address and agent
+credential. Both trial listeners share one scheduler and the same isolated
+guest. Operator approval stays on the loopback listener. The health response
+identifies the peer listener with `remoteTrial`.
+
 After real private acceptance, `--activate --report` checks the app/security/lease
 results and compares the report's screenshot, installed code and VM
 configuration digests against the actual files. Queued public jobs recheck

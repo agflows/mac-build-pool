@@ -95,6 +95,16 @@ class ApiTest(unittest.TestCase):
         status, _payload = self._request("GET", "/v1/health", token="nope")
         self.assertEqual(status, 401)
 
+    def test_trial_limits_access_to_its_peer_and_rejects_operator_credentials(self) -> None:
+        self.httpd.app.trial_peer = "100.78.73.28"
+        self.assertEqual(self._request("GET", "/v1/health")[0], 403)
+        self.httpd.app.trial_peer = "127.0.0.1"
+        status, payload = self._request("GET", "/v1/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(payload)["remoteTrial"])
+        self.assertEqual(self._request("GET", "/v1/health", token=None)[0], 401)
+        self.assertEqual(self._request("POST", "/v1/jobs/probe/approve", b"{}", token=OPERATOR)[0], 403)
+
     def test_health_and_missing_shell_route(self) -> None:
         status, payload = self._request("GET", "/v1/health")
         self.assertEqual(status, 200)

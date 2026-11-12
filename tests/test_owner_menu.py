@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from broker import agent_instructions
+from broker import agent_instructions, load_trial_peer, start_peer_trial
 from owner_menu import RUsageInfoV0, broker_disk_paths, peer_uid, role_memory_footprint, snapshot
 
 
@@ -38,6 +38,33 @@ class OwnerMenuTest(unittest.TestCase):
             instructions = agent_instructions(config, app, runner)
         self.assertIn("Remote jobs are enabled.", instructions)
         self.assertNotIn("operator-token", instructions)
+
+    def test_instructions_report_the_active_trial_at_the_regular_address(self):
+        app = SimpleNamespace(token="validation-token", operator_token="validation-operator")
+        config = SimpleNamespace(token_file=Path("/test/agent-token"), listen_port=8741)
+        runner = SimpleNamespace(validation_mode=True, installed=lambda: True)
+        with patch("broker.load_broker_config", return_value=config), \
+             patch("broker._read_secret", return_value="public-agent-token"), \
+             patch("broker.listen_host", return_value="100.64.0.9"):
+            instructions = agent_instructions(None, app, runner, trial_peer="100.78.73.28")
+        self.assertIn("http://100.64.0.9:8741", instructions)
+        self.assertIn("public-agent-token", instructions)
+        self.assertIn("Remote trial jobs are enabled for 100.78.73.28.", instructions)
+        self.assertNotIn("validation-token", instructions)
+
+    def test_trial_peer_requires_a_protected_config_and_tailscale_address(self):
+        path = Mock(spec=Path)
+        path.read_text.return_value = '{"peer":"100.78.73.28"}'
+        with patch("broker.require_protected_file") as protected:
+            self.assertEqual(load_trial_peer(path), "100.78.73.28")
+            protected.assert_called_once_with(path)
+            path.read_text.return_value = '{"peer":"192.0.2.1"}'
+            with self.assertRaisesRegex(SystemExit, "Tailscale"):
+                load_trial_peer(path)
+
+    def test_trial_refuses_an_unisolated_runner(self):
+        with self.assertRaisesRegex(SystemExit, "isolated validation worker"):
+            start_peer_trial(None, SimpleNamespace(runner=object()), "100.78.73.28")
 
     def test_local_peer_identity_comes_from_kernel(self):
         first, second = socket.socketpair()

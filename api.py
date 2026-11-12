@@ -33,6 +33,8 @@ class App:
         max_upload_bytes: int,
         disk_used=None,
         disk_budget: int = DISK_BUDGET,
+        *,
+        trial_peer: str | None = None,
     ) -> None:
         self.scheduler = scheduler
         self.token = token
@@ -42,6 +44,7 @@ class App:
         self.max_upload_bytes = max_upload_bytes
         self.disk_used = disk_used or (lambda: 0)
         self.disk_budget = disk_budget
+        self.trial_peer = trial_peer
 
 
 class WorkerHTTPServer(ThreadingHTTPServer):
@@ -71,7 +74,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             from config import peer_allowed
 
-            if not peer_allowed(self.client_address[0], app.allow_loopback):
+            peer = self.client_address[0]
+            if ((app.trial_peer is not None and peer != app.trial_peer)
+                    or not peer_allowed(peer, app.allow_loopback)):
                 self._json(403, {"error": "forbidden"})
                 return
             header = self.headers.get("Authorization", "")
@@ -83,7 +88,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 raise
             if operator_route(method, segments):
-                if not authorized(header, app.operator_token) or authorized(header, app.token):
+                if (app.trial_peer is not None or not authorized(header, app.operator_token)
+                        or authorized(header, app.token)):
                     self._json(403, {"error": "operator_required"})
                     return
             elif not authorized(header, app.token):
@@ -151,6 +157,7 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         return 200, {"ok": True, "executionMode": mode, "executorInstalled": installed,
                      "securityBoundary": "unix-account" if mode == "native-user" else ('macOS-vm' if vm_backend else "external-vm-controller-required"),
                      "networkIsolationVerified": bool(vm_backend and installed and scheduler.runner.verified()),
+                     "remoteTrial": app.trial_peer is not None,
                      "leaseActive":lease.get('status')=='active',
                      "leaseExpiresIn":max(0,lease.get('expires',0)-scheduler.clock()),
                      "simulators":[{"deviceId":device,"platform":platforms.get(device,"iOS")}
