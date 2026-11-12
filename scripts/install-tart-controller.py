@@ -275,7 +275,7 @@ def stage(args):
     data={'Label':'com.iosworker.vmcontroller','UserName':'iosvm','GroupName':'iosworker-control',
           'ProgramArguments':[str(HOST_PYTHON),'-I',str(LIB/'vm_launch.py'),str(LIB/'vm.json')],
           'WorkingDirectory':'/private/tmp','RunAtLoad':True,'KeepAlive':True,'ThrottleInterval':10,
-          'ProcessType':'Background','Nice':5,'LowPriorityIO':True,'SessionCreate':True,
+          'ProcessType':'Standard','Nice':5,'SessionCreate':True,
           'EnvironmentVariables':{'HOME':str(VMHOME),'USER':'iosvm','LOGNAME':'iosvm',
                                   'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','PYTHONDONTWRITEBYTECODE':'1'},
           'StandardOutPath':str(VMHOME/'controller.log'),'StandardErrorPath':str(VMHOME/'controller.log')}
