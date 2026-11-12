@@ -34,6 +34,29 @@ PERSONAL = '4D015300-4BAE-4E6D-89C9-BC4D454E4216'
 FIELDS = frozenset({'op','lease_id','ttl','job_id','revision_id','session_id','device_id','scheme','recipe',
                     'public_env','configuration','for_testing','artifact_id','source_base64','approved'})
 
+STOP_GUEST_SIMULATORS = b"""
+import json
+import os
+import subprocess
+import time
+
+os.chdir('/private/tmp')
+simctl = ['/usr/bin/xcrun', 'simctl']
+
+def all_stopped():
+    listing = json.loads(subprocess.check_output(simctl + ['list', 'devices', '-j'], timeout=20))
+    return all(device['state'] == 'Shutdown'
+               for devices in listing['devices'].values() for device in devices)
+
+if not all_stopped():
+    subprocess.run(simctl + ['shutdown', 'all'], check=True, timeout=30)
+    deadline = time.monotonic() + 30
+    while not all_stopped():
+        if time.monotonic() >= deadline:
+            raise SystemExit('simulators did not reach Shutdown')
+        time.sleep(0.5)
+"""
+
 
 class BuildTart(OfflineTart):
     def __init__(self, *args, allowed=PACKAGE_HOSTS, base_identity=None, **kwargs):
@@ -109,6 +132,15 @@ class BuildTart(OfflineTart):
             if relay:
                 relay.close()
             super().stop(name)
+
+    def stop_simulators(self, name):
+        command = [self.binary, 'exec', '-i', name, '/usr/bin/sudo', '-n', '-u', 'iosagent',
+                   '/usr/bin/python3', '-I', '-']
+        code, _, error = communicate(command, STOP_GUEST_SIMULATORS, env=self.env,
+                                     timeout=110, cap=1024 * 1024)
+        if code:
+            raise LeaseError('guest simulators failed to shut down before build: '
+                             + error.decode(errors='replace')[-500:])
 
     def operation(self, name, request):
         timeout = {'prepare':2700,'build':BUILD_TIMEOUT+60,'uitest':1800,'launch':1140,'boot':840,
@@ -201,6 +233,9 @@ class Service:
                 elif not isinstance(source,str):
                     raise LeaseError('source must be staged into the leased guest')
             try:
+                if op in {'prepare', 'build'}:
+                    self.backend.stop_simulators(vm)
+                    self.controller.require_active(lease)
                 result = self.backend.operation(vm,payload)
             except Exception:
                 if self.controller.lease and self.controller.lease['id']==lease:

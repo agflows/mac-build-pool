@@ -111,6 +111,10 @@ class SchedulerTest(unittest.TestCase):
             self.scheduler.submit_build(revision, None, lease)
         self.scheduler.submit_uitest(revision, None, None, lease)
 
+    def test_tart_scheduler_has_only_one_running_slot(self) -> None:
+        self.runner.vm_backend = True
+        self.assertEqual(self._scheduler(max_running=3).max_running, 1)
+
     def test_one_job_runs_at_a_time(self) -> None:
         self.runner = FakeRunner(block=True)
         self.addCleanup(self.runner.gate.set)

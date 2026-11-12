@@ -19,13 +19,19 @@ working or interacting with the simulator; job completion alone does not end a
 lease. Release or expiry stops and deletes its disposable APFS clone. An expired
 lease cannot be revived. Daemon restart reaps only its own `lease-*` guests.
 
-Only the small broker/controller remains while idle. The guest has a configured
-4, 6 or 8 GiB RAM ceiling; it does not resize itself to each compiler's measured
-needs. Its macOS overhead exists while the lease is active. Stopping it releases
-its RAM; a powered-off image uses disk only. The default installed profile uses
-4 GiB and four virtual CPUs, serial builds and a 100 GB sparse guest disk.
-Warning pressure requires owner resource approval before starting the guest;
-urgent pressure stops this guest without touching personal apps or simulators.
+Only the small broker/controller remains while idle. The guest sees a fixed
+4, 6 or 8 GiB RAM limit. Apple's Virtualization framework allocates physical
+pages on demand, and Tart does not shrink the guest's RAM limit during a lease.
+Host memory can reach the full guest limit plus virtualization overhead.
+Stopping the guest releases that memory. The installer defaults to 4 GiB, four
+virtual CPUs and a 100 GB sparse guest disk. Use `--memory-mib 8192` for the
+8 GiB profile. The host and guest each manage swap on their startup disks.
+
+The Tart broker runs one job at a time. The controller shuts down and verifies
+all guest simulators before preparation or compilation. To use a simulator
+again, request a boot or launch after the build finishes. Warning pressure
+requires owner resource approval before starting the guest. Urgent pressure
+stops this guest without touching personal apps or simulators.
 Builds have a 45-minute deadline, including Xcode scheme discovery. A timed-out
 command returns its bounded diagnostic output before the controller reaps its guest.
 

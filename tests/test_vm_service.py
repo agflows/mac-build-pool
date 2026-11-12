@@ -1,7 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
+import subprocess
+import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, call, patch
 
-from vm_service import Service
+from vm_service import Service, STOP_GUEST_SIMULATORS
 from tart_lease import LeaseError
 from policy import PolicyError
 
@@ -50,6 +53,59 @@ class VMServiceTest(unittest.TestCase):
         self.service.dispatch(payload)
         self.assertNotIn('source_base64',self.backend.operation.call_args.args[1])
         self.backend.start.assert_called_once()
+
+    def test_prepare_and_build_stop_simulators_before_guest_work(self):
+        self.reserve()
+        self.service.dispatch({'op': 'prepare', 'lease_id': LEASE})
+        self.service.dispatch({'op': 'build', 'lease_id': LEASE})
+        vm = self.backend.start.call_args.args[0]
+        self.assertEqual(self.backend.mock_calls[-4:], [
+            call.stop_simulators(vm),
+            call.operation(vm, {'op': 'prepare'}),
+            call.stop_simulators(vm),
+            call.operation(vm, {'op': 'build'}),
+        ])
+
+    def test_failed_simulator_shutdown_prevents_build_and_reaps_guest(self):
+        self.reserve()
+        self.backend.stop_simulators.side_effect = LeaseError('guest simulator still running')
+        with self.assertRaisesRegex(LeaseError, 'still running'):
+            self.service.dispatch({'op': 'build', 'lease_id': LEASE})
+        self.backend.operation.assert_not_called()
+        self.backend.delete.assert_called_once()
+
+    def test_build_excludes_another_build_and_simulator_boot(self):
+        self.reserve()
+        building = threading.Event()
+        release = threading.Event()
+        contenders_ready = threading.Barrier(3)
+
+        def operation(vm, request):
+            if request.get('job_id') == 'first':
+                building.set()
+                if not release.wait(5):
+                    raise TimeoutError('test build was not released')
+            return {'ok': True}
+
+        def contend(request):
+            contenders_ready.wait(timeout=5)
+            return self.service.dispatch(request)
+
+        self.backend.operation.side_effect = operation
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            build = pool.submit(self.service.dispatch, {'op': 'build', 'lease_id': LEASE, 'job_id': 'first'})
+            try:
+                self.assertTrue(building.wait(5))
+                second = pool.submit(contend, {'op': 'build', 'lease_id': LEASE})
+                boot = pool.submit(contend, {'op': 'boot', 'lease_id': LEASE, 'device_id': WORKER})
+                contenders_ready.wait(timeout=5)
+                self.assertFalse(second.done())
+                self.assertFalse(boot.done())
+                self.backend.operation.assert_called_once()
+            finally:
+                release.set()
+            for result in (build, second, boot):
+                self.assertTrue(result.result(timeout=5)['ok'])
 
     def test_watch_only_accepts_the_public_logical_id(self):
         watch = 'A23FD418-22F2-4BA4-9E87-91E86A9D3F09'
@@ -113,3 +169,16 @@ class VMServiceTest(unittest.TestCase):
         with self.assertRaises(LeaseError):
             self.service.dispatch({'op':'reserve','lease_id':'b'*16})
         self.assertIn('rev1',self.service.loaded)
+
+
+class GuestSimulatorShutdownTest(unittest.TestCase):
+    def test_waits_for_both_phone_and_watch_to_shut_down(self):
+        with patch('os.chdir'), patch('time.sleep'), \
+                patch.object(subprocess, 'check_output', side_effect=[
+                    b'{"devices":{"phone":[{"state":"Booted"}],"watch":[{"state":"Booting"}]}}',
+                    b'{"devices":{"phone":[{"state":"Shutdown"}],"watch":[{"state":"Shutting Down"}]}}',
+                    b'{"devices":{"phone":[{"state":"Shutdown"}],"watch":[{"state":"Shutdown"}]}}',
+                ]) as list_devices, patch.object(subprocess, 'run') as shutdown:
+            exec(compile(STOP_GUEST_SIMULATORS, 'guest simulator shutdown', 'exec'), {})
+        shutdown.assert_called_once_with(['/usr/bin/xcrun', 'simctl', 'shutdown', 'all'], check=True, timeout=30)
+        self.assertEqual(list_devices.call_count, 3)

@@ -82,7 +82,7 @@ class Scheduler:
         self.artifact_root = artifact_root
         self.export_root = export_root or (artifact_root.parent / "export")
         self.lease: Optional[dict] = None
-        self.max_running = max_running
+        self.max_running = 1 if getattr(runner, 'vm_backend', False) else max_running
         self.max_build_jobs = max_build_jobs
         self.max_pending_jobs = max_pending_jobs
         self.idle_seconds = idle_seconds
