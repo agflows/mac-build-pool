@@ -121,9 +121,18 @@ def prepare(request: dict, cfg, commands: Commands) -> dict:
     if recipe != "expo-ios" and public_env:
         raise PolicyError("invalid_environment", "EXPO_PUBLIC_ configuration is only supported by expo-ios.")
     if recipe == "expo-ios":
-        if not is_expo_project(revision) or not (revision / "package-lock.json").is_file():
-            raise PolicyError("project", "expo-ios requires package.json and package-lock.json at the snapshot root.")
-        require_under(revision / "package-lock.json", revision)
+        lockfiles = [name for name in ("package-lock.json", "bun.lock", "bun.lockb") if (revision / name).is_file()]
+        if not is_expo_project(revision) or len(lockfiles) != 1:
+            raise PolicyError("project", "expo-ios requires exactly one supported npm/Bun lockfile at the snapshot root.")
+        require_under(revision / lockfiles[0], revision)
+        if lockfiles[0].startswith("bun"):
+            if "bun" not in tools:
+                raise PolicyError("toolchain_missing", "Configure an owner-approved Bun executable for this project.")
+            install_step = ("bun install", [str(tools["bun"]), "install", "--frozen-lockfile"])
+        else:
+            if "npm_cli" not in tools:
+                raise PolicyError("toolchain_missing", "Configure the owner-approved npm CLI for this project.")
+            install_step = ("npm ci", [str(tools["node"]), str(tools["npm_cli"]), "ci", "--no-audit", "--no-fund"])
     elif recipe == "flutter-ios":
         if not is_flutter_project(revision) or not (revision / "pubspec.lock").is_file() or not (revision / "ios").is_dir():
             raise PolicyError("project", "flutter-ios requires a Flutter app with pubspec.yaml, pubspec.lock and ios/.")
@@ -137,7 +146,7 @@ def prepare(request: dict, cfg, commands: Commands) -> dict:
     receipt.unlink(missing_ok=True)  # Never reuse a receipt after failed preparation.
     if recipe == "expo-ios":
         steps = [
-            ("npm ci", [str(tools["node"]), str(tools["npm_cli"]), "ci", "--no-audit", "--no-fund"]),
+            install_step,
             ("expo prebuild", [str(tools["node"]), str(revision / "node_modules/expo/bin/cli"), "prebuild", "--platform", "ios", "--no-install", "--clean", "--skip-dependency-update", "react,react-native"]),
             ("pod install", [str(tools["pod"]), "install", "--project-directory=" + str(revision / "ios")]),
         ]
@@ -165,6 +174,8 @@ def prepare(request: dict, cfg, commands: Commands) -> dict:
         log = (log + "\n== " + label + " ==\n")[-LOG_CAP:]
         try:
             completed = commands.run(argv, timeout=remaining)
+        except (TimeoutError,subprocess.TimeoutExpired) as exc:
+            raise CommandFailed((log+str(exc))[-LOG_CAP:],124) from exc
         except Exception as exc:
             raise CommandFailed((log + str(exc))[-LOG_CAP:], 1) from exc
         log = (log + _tail(completed))[-LOG_CAP:]
@@ -345,6 +356,12 @@ def ensure_booted(device: str, approved: bool, cfg, commands: Commands, memory) 
     status = commands.run([commands.xcrun, "simctl", "bootstatus", device, "-b"], timeout=180)
     if not is_booted(probe, cfg, commands):
         raise CommandFailed(_tail(status) or "boot failed", int(status.returncode or 1))
+    if getattr(cfg,'package_proxy',False):
+        from execution_policy import require_protected_file
+        certificate=Path('/Library/ios-worker/proxy-ca.pem')
+        require_protected_file(certificate)
+        _check(commands.run([commands.xcrun,'simctl','keychain',device,'add-root-cert',str(certificate)],
+                            timeout=30),'guest simulator relay trust setup failed')
 
 
 def _device(request: dict, cfg) -> str:

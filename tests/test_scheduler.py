@@ -240,10 +240,33 @@ class SchedulerTest(unittest.TestCase):
 
     def test_active_lease_blocks_idle_shutdown(self) -> None:
         self.runner.booted.add(WORKER)
-        self.scheduler.acquire_lease()
+        lease=self.scheduler.acquire_lease()
+        self.clock.now=299
+        self.scheduler.renew_lease(lease)
+        self.clock.now=598
+        self.scheduler.renew_lease(lease)
         self.clock.now = 601
         self.scheduler.step()
         self.assertEqual(self.runner.shutdowns, [])
+
+    def test_expired_lease_cannot_be_renewed_or_submit_jobs(self):
+        lease=self.scheduler.acquire_lease()
+        self.clock.now=300
+        with self.assertRaises(PolicyError):
+            self.scheduler.renew_lease(lease)
+        with self.assertRaises(PolicyError):
+            self.scheduler.submit_build('rev1',None,lease)
+        self.scheduler.step()
+        self.assertEqual(self.scheduler.lease['status'],'released')
+
+    def test_controller_stopped_guest_releases_lease_and_fails_pending_work(self):
+        lease=self.scheduler.acquire_lease()
+        job=self.scheduler.submit_build(self._ready(),None,lease,boot_after=False)
+        self.runner.lease_alive=lambda identifier:False
+        self.scheduler.step()
+        self.assertEqual(self.scheduler.lease['status'],'released')
+        self.assertEqual(self.scheduler.get(job.id).status,'failed')
+        self.assertFalse(self.runner.started)
 
     def test_personal_device_is_refused_even_if_the_denylist_is_empty(self) -> None:
         with self.assertRaises(PolicyError) as caught:
@@ -395,6 +418,8 @@ class SchedulerTest(unittest.TestCase):
             self.scheduler.acquire_lease()
         self.runner.gate.set()
         self._wait_idle(prep.id)
+        self.assertEqual(self.scheduler.get(prep.id).status,'failed')
+        self.assertIn('Lease ended',self.scheduler.get(prep.id).error)
         self.assertTrue(self.scheduler.acquire_lease())
 
     def test_automatic_boot_inherits_lease_and_is_cancelled_on_release(self):

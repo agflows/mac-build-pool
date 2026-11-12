@@ -1,13 +1,13 @@
-# Required isolated-executor contract (implementation pending)
+# Required isolated-executor contract
 
-> **Owner update, 2026-11-11:** The owner subsequently accepted separate-user
-> execution and requested **code preparation only; keep the service unchanged**.
-> See [Native user mode](NATIVE_USER_MODE.md) for that explicit opt-in path.
-> The VM requirements below continue to apply to `isolated-only`, not to the
-> weaker native mode. Signing and USB APIs remain disabled in both modes.
+> **Owner update, 2026-11-12:** The owner now authorizes on-demand Tart VM
+> setup and real build/simulator validation. The earlier code-only restriction
+> is superseded. Keep developer signing and USB disabled. The controller candidate
+> is undergoing private acceptance; see [Tart setup](TART_SETUP.md). All isolation
+> requirements below remain in force; there is no native-host fallback.
 
-This is a specification for the missing Mac-side controller, not a claim that
-isolation already exists. The shipped host broker intentionally fails jobs when
+This is the acceptance specification for the Mac-side controller, not a claim
+that the new Tart candidate has completed real security validation. The shipped host broker intentionally fails jobs when
 `/Library/ios-worker/isolation-executor` is absent. Do not replace this requirement
 with a flag, an echo script, an SSH shell on the host, or the legacy native runner.
 
@@ -94,7 +94,8 @@ Required coverage:
 
 Example pitfall: a VM tool advertising public-only networking may still allow its
 host gateway. Do not assume this is safe. Probe host services and every escape
-route. No network policy implementation is shipped in this change.
+route. The Tart candidate enforces disconnected Ethernet plus a host-validated HTTPS
+relay; complete these real tests before public activation.
 
 ## Lifecycle integration still to implement
 

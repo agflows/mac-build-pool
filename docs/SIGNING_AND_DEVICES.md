@@ -1,10 +1,10 @@
 # Signing and USB deployment: design, not implemented
 
-> **Owner update, 2026-11-11:** The owner subsequently accepted separate-user
-> execution and requested **code preparation only; keep the service unchanged**.
-> See [Native user mode](NATIVE_USER_MODE.md) for that explicit opt-in path.
-> The VM requirements below continue to apply to `isolated-only`, not to the
-> weaker native mode. Signing and USB APIs remain disabled in both modes.
+> **Owner update, 2026-11-12:** The owner now authorizes on-demand Tart VM
+> setup and real build/simulator validation. The earlier code-only restriction
+> is superseded. Keep developer signing and USB disabled. The controller candidate
+> is undergoing private acceptance; see [Tart setup](TART_SETUP.md). All isolation
+> requirements below remain in force; there is no native-host fallback.
 
 ## What signing means
 

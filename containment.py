@@ -32,6 +32,14 @@ TEMP_ROOT = LIBRARY_ROOT / "data" / "tmp"
 BROKER_USER = "iosbroker"
 AGENT_USER = "iosagent"
 CODE_FILES = (
+    "tart_lease.py",
+    "egress_policy.py",
+    "http_policy.py",
+    "host_egress.py",
+    "vm_transport.py",
+    "vm_service.py",
+    "vm_runner.py",
+    "vm_launch.py",
     "audit.py",
     "policy.py",
     "config.py",

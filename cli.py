@@ -75,12 +75,20 @@ def print_json(raw: bytes) -> dict:
 
 def wait_job(url: str, token: str, job_id: str, timeout: float = 3600) -> dict:
     deadline = time.monotonic() + timeout
+    last_renewal = 0.0
     while time.monotonic() < deadline:
         status, raw = call(url, token, "GET", "/v1/jobs/" + job_id)
         if status != 200:
             print_json(raw)
             raise SystemExit(status)
         payload = json.loads(raw.decode("utf-8"))
+        lease_id=payload.get('leaseId')
+        if lease_id and time.monotonic()-last_renewal>=60 and payload.get('status') not in {'succeeded','failed'}:
+            renewal_status, renewal=call(url,token,'POST',f'/v1/leases/{lease_id}/renew',b'{}')
+            if renewal_status!=200:
+                print_json(renewal)
+                raise SystemExit('Lease renewal failed; the VM will stop at expiry.')
+            last_renewal=time.monotonic()
         if payload.get("status") in {"succeeded", "failed", "waiting_for_approval"}:
             print_json(raw)
             if payload.get("status") == "failed":
@@ -101,7 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--operator-token-file", default=os.environ.get("IOS_WORKER_OPERATOR_TOKEN_FILE", ""))
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("health")
-    sub.add_parser("lease")
+    lease=sub.add_parser("lease")
+    lease.add_argument('--simulator',action='store_true')
+    renew=sub.add_parser('renew')
+    renew.add_argument('lease')
     release = sub.add_parser("release")
     release.add_argument("lease")
     source = sub.add_parser("source")
@@ -152,9 +163,11 @@ def main(argv: list[str]) -> int:
     if args.command == "health":
         status, raw = call(args.url, token, "GET", "/v1/health")
     elif args.command == "lease":
-        status, raw = call(args.url, token, "POST", "/v1/leases", b"{}")
+        status, raw = call(args.url, token, "POST", "/v1/leases", json.dumps({'bootSimulator':args.simulator}).encode())
     elif args.command == "release":
         status, raw = call(args.url, token, "POST", f"/v1/leases/{args.lease}/release", b"{}")
+    elif args.command == 'renew':
+        status,raw=call(args.url,token,'POST',f'/v1/leases/{args.lease}/renew',b'{}')
     elif args.command == "source":
         archive = Path(args.archive)
         status, raw = call(args.url, token, "POST", "/v1/sources", archive.read_bytes(), "application/gzip")

@@ -1,0 +1,25 @@
+{
+  "tart": {
+    "version": "2.41.1",
+    "url": "https://github.com/cirruslabs/tart/releases/download/2.41.1/tart.tar.gz",
+    "sha256": "e680a734febccfce7d4e910c1f7f13fc3b00f19a181c945e2d746de3214c32c2"
+  },
+  "macOSImage": {
+    "reference": "ghcr.io/cirruslabs/macos-tahoe-base@sha256:65c3133a633fda8753cf1f71f2d55727792d534a2125b0032466563dcc8e58fd"
+  },
+  "node": {
+    "version": "24.22.3",
+    "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-darwin-arm64.tar.gz",
+    "sha256": "ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd"
+  },
+  "bun": {
+    "version": "1.4.4",
+    "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-darwin-aarch64.zip",
+    "sha256": "c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510"
+  },
+  "flutter": {
+    "version": "3.50.0",
+    "url": "https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_3.50.0-stable.zip",
+    "sha256": "ed2d08a3e3c023e84cbe9316d21bd88fda6ee9552f90c1eb4da41a07c170fb35"
+  }
+}

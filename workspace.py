@@ -15,7 +15,7 @@ from containment import worker_child_env
 from policy import PolicyError, require_public_env, require_under, require_recipe
 
 TOOLCHAIN_KEYS = {
-    "expo-ios": frozenset({"node", "npm_cli", "pod", "ruby_bin"}),
+    "expo-ios": frozenset({"node", "pod", "ruby_bin"}),
     "flutter-ios": frozenset({"flutter_sdk", "pod", "ruby_bin"}),
     "swift-ios": frozenset(),
 }
@@ -31,6 +31,8 @@ def require_preparation_enabled(cfg) -> None:
 def toolchain_paths(cfg, recipe: str = "expo-ios") -> dict[str, Path]:
     require_preparation_enabled(cfg)
     required = TOOLCHAIN_KEYS[require_recipe(recipe)]
+    if recipe == "expo-ios":
+        required = required | (cfg.toolchain.keys() & {"npm_cli", "bun"})
     if not required.issubset(cfg.toolchain):
         raise PolicyError("toolchain_missing", "Configure the recipe's approved toolchain in the guest's owner-managed worker.json.")
     paths = {}
@@ -50,7 +52,7 @@ def toolchain_paths(cfg, recipe: str = "expo-ios") -> dict[str, Path]:
         for item in {path, resolved, *path.parents, *resolved.parents}:
             if os.access(item, os.W_OK):
                 raise PolicyError("toolchain_writable", f"Toolchain entry or ancestor is writable by iosagent: {name}")
-        if name in {"node", "pod", "ruby_bin", "flutter_sdk"} and not os.access(resolved, os.X_OK):
+        if name in {"node", "bun", "pod", "ruby_bin", "flutter_sdk"} and not os.access(resolved, os.X_OK):
             raise PolicyError("toolchain_missing", f"Toolchain entry is not executable: {name}")
         paths[name] = path
     return paths
@@ -117,6 +119,7 @@ def workspace_env(revision: Path, cfg, public_env: dict | None = None, *, tools=
         "MODULE_CACHE_DIR": str(cache / "clang"),
         "PATH": ":".join(dict.fromkeys(
             ([str(tools["node"].parent)] if "node" in tools else []) +
+            ([str(tools["bun"].parent)] if "bun" in tools else []) +
             ([str(tools["ruby_bin"]), str(tools["pod"].parent)] if "pod" in tools else []) +
             ([str(revision / ".worker/flutter/bin")] if "flutter_sdk" in tools else []) +
             ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])),
@@ -125,6 +128,9 @@ def workspace_env(revision: Path, cfg, public_env: dict | None = None, *, tools=
         "npm_config_prefix": str(home / "npm-global"),
         "npm_config_userconfig": str(home / ".npmrc"),
         "npm_config_globalconfig": str(home / "global.npmrc"),
+        "BUN_INSTALL_CACHE_DIR": str(cache / "bun"),
+        "BUN_CONFIG_MAX_HTTP_REQUESTS": "8",
+        "npm_config_maxsockets": "8",
         "CP_HOME_DIR": str(cache / "cocoapods-home"),
         "CP_CACHE_DIR": str(cache / "cocoapods"),
         "BUNDLE_USER_HOME": str(home / ".bundle"),
@@ -136,6 +142,14 @@ def workspace_env(revision: Path, cfg, public_env: dict | None = None, *, tools=
     })
     if "node" in tools:
         env["NODE_BINARY"] = str(tools["node"])
+    if getattr(cfg, "package_proxy", False):
+        env["NODE_USE_ENV_PROXY"] = "1"
+        env['NODE_EXTRA_CA_CERTS']='/Library/ios-worker/proxy-ca.pem'
+        for key in ('SSL_CERT_FILE','CURL_CA_BUNDLE','GIT_SSL_CAINFO'):
+            env[key]='/Library/ios-worker/proxy-ca-bundle.pem'
+        for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            env[key] = "http://127.0.0.1:18741"
+        env["NO_PROXY"] = env["no_proxy"] = "localhost,127.0.0.1,::1"
     if "flutter_sdk" in tools:
         env["FLUTTER_ROOT"] = str(revision / ".worker/flutter")
         env["FLUTTER_SUPPRESS_ANALYTICS"] = "true"

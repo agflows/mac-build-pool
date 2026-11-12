@@ -4,16 +4,15 @@ Experimental macOS build/test API for remote agents. Project recipes cover **Swi
 Expo/React Native and Flutter iOS apps**. The host broker no longer executes
 projects as the personal login account.
 
-> **Owner update, 2026-11-11:** A separate, explicitly opted-in `native-user`
-> mode is now prepared at the owner’s request. It uses account separation, **not
-> VM or network isolation**. Installation and real build validation are deferred;
-> the installed service was left unchanged. Read [Native user mode](docs/NATIVE_USER_MODE.md).
-> The default remains `isolated-only`; the requirements below describe that mode.
-
-> **Not production-ready.** The isolated VM/network executor is a required
-> integration and is **not implemented in this repository yet**. Without it, work requests
-> fail closed with HTTP 503 / `isolation_required`. Unit tests are not proof that a Mac is
-> isolated. There is no automatic native-host fallback or setting that asserts isolation.
+> **Owner update, 2026-11-12:** On-demand disposable macOS VM setup is now
+> authorized. The Tart controller is implemented and undergoing private Mac
+> acceptance. The earlier separate-user implementation remains an explicit,
+> weaker opt-in, with no automatic fallback. Signing and USB remain disabled.
+>
+> Public isolated execution stays gated until a protected acceptance report
+> matches the installed code/configuration and records real app, security and
+> lease-expiry results. Unit tests and a controller file alone are insufficient.
+> See [Tart setup and lease lifecycle](docs/TART_SETUP.md).
 
 ## Why the boundary changed
 
@@ -35,9 +34,9 @@ Remote agent → authenticated host broker → isolated VM/network controller
 ```
 
 - Broker stays `iosbroker`, never root or the personal login.
-- Fixed controller path: `/Library/ios-worker/isolation-executor`, protected from
-  broker/job modification. No caller-selected executable or shell argv.
-- `IsolatedRunner` is the host-side **contract**, not a VM implementation. See
+- Tart uses root-owned `/Library/ios-worker/vm.json` and a private protected
+  Unix control socket, never a caller-selected executable or shell argv.
+- The external `IsolatedRunner` contract remains available separately. See
   [docs/ISOLATION_CONTRACT.md](docs/ISOLATION_CONTRACT.md).
 - A missing/untrusted controller cannot fall back to the previous `SudoRunner`.
 - Default host installer removes this project's old native sudo grant/helper. It does
@@ -51,12 +50,12 @@ Remote agent → authenticated host broker → isolated VM/network controller
 Do not install an adapter that simply invokes the old host worker or reports
 `{"isolated":true}`. Implement and validate the controller contract first.
 
-## Implemented recipes (executor-side; Mac integration still needs testing)
+## Implemented recipes
 
 | Recipe | Input | Preparation | Simulator build |
 | --- | --- | --- | --- |
 | `swift-ios` | App `.xcodeproj`/`.xcworkspace` | Resolve pinned Swift packages using Xcode; no Node/Ruby needed | Debug or Release; optional XCTest |
-| `expo-ios` | App-root package.json + package-lock.json | npm ci → Expo prebuild → CocoaPods | Release + build-only embeds JS; Debug needs bundling/Metro planning |
+| `expo-ios` | App-root package.json + exactly one npm/Bun lockfile | frozen npm/Bun install → Expo prebuild → CocoaPods | Release + build-only embeds JS; Debug needs bundling/Metro planning |
 | `flutter-ios` | pubspec.yaml + pubspec.lock + existing ios/ | Private copy of approved Flutter SDK → locked pub get → Flutter iOS config/Pods or SwiftPM | **Debug**, build-only; no Metro |
 
 A plain Swift app may build directly without preparation. SwiftPM package-only
@@ -64,7 +63,7 @@ libraries without an app Xcode project are not yet a simulator-app workflow. The
 Expo recipe regenerates ios/ with `--clean`; do not use it on hand-maintained iOS
 projects. Flutter requires a checked-in ios/ project and does not replace your
 app with a generated demo. Flutter SDK copies require a fresh revision on retry.
-Yarn/pnpm/Bun, Flutter flavors/defines and private dependency credentials are not
+Yarn/pnpm, Flutter flavors/defines and private dependency credentials are not
 implemented by these recipes yet. XCTest targets must actually exist; Expo and
 Flutter preparation do not synthesize UI tests or run Maestro.
 
@@ -90,7 +89,8 @@ and validation rather than installing this as though it were a ready sandbox.
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/health` | API health, queue/pressure, `executionMode` and `executorInstalled` |
-| `POST /v1/leases` | Acquire exclusive session; returns `leaseId` |
+| `POST /v1/leases` | Acquire exclusive VM session; optional simulator startup |
+| `POST /v1/leases/{id}/renew` | Renew before expiry; two-hour absolute maximum |
 | `POST /v1/sources` | Upload tar/gzip; returns ingest job + `revisionId` |
 | `POST /v1/preparations` | Select `recipe`, revision, lease, optional scheme/publicEnv |
 | `POST /v1/builds` | Build; configuration Debug/Release, forTesting boolean |
@@ -162,10 +162,11 @@ python3 -m unittest discover -s tests -v
 
 Linux tests use fake tools and cover recipes, SDK copying, policy, API, scheduling,
 logs, artifact handling and no-fallback guards. No Swift/Flutter/Expo build is
-claimed to have passed on the new isolated executor. Native VM launch, network
+claimed to have passed until actual Mac evidence is recorded. Native VM launch, network
 confinement, signing, phone deployment and reboot recovery require Mac validation.
 
-State/lease recovery, cancellation, cleanup, VM lifecycle and network controller
-are unfinished. This is an architecture migration and recipe implementation,
-not a turnkey secure employee-compute pool. Do not weaken the isolation contract
-to obtain a passing screenshot.
+The Tart implementation covers expiring leases, VM cleanup and an external
+network boundary. Real Mac acceptance is still in progress; consult the recorded
+evidence before enabling it. Reboot/FileVault recovery, host network changes and
+framework-specific edge cases need explicit verification. Do not weaken the
+isolation contract to obtain a passing screenshot.

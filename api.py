@@ -145,14 +145,25 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         counts = scheduler.counts()
         installed = getattr(scheduler.runner, "installed", lambda: False)()
         mode = getattr(scheduler.runner, "execution_mode", "isolated-only")
+        vm_backend=getattr(scheduler.runner,'vm_backend',False)
+        lease=scheduler.lease or {}
         return 200, {"ok": True, "executionMode": mode, "executorInstalled": installed,
-                     "securityBoundary": "unix-account" if mode == "native-user" else "external-vm-controller-required",
-                     "networkIsolationVerified": False, "signingAPIEnabled": False, "usbAPIEnabled": False,
+                     "securityBoundary": "unix-account" if mode == "native-user" else ('macOS-vm' if vm_backend else "external-vm-controller-required"),
+                     "networkIsolationVerified": bool(vm_backend and installed and scheduler.runner.verified()),
+                     "leaseActive":lease.get('status')=='active',
+                     "leaseExpiresIn":max(0,lease.get('expires',0)-scheduler.clock()),
+                     "signingAPIEnabled": False, "usbAPIEnabled": False,
                      "pressure": scheduler.pressure_name(), **counts}, JSON
     if method == "POST" and segments == ["v1", "sources"]:
         return accept_source(app, body, content_type)
     if method == "POST" and segments == ["v1", "leases"]:
-        return 201, {"leaseId": scheduler.acquire_lease()}, JSON
+        data=read_json(body)
+        lease_id=scheduler.acquire_lease(data.get('ttl',300),data.get('bootSimulator',False))
+        return 201, {"leaseId":lease_id,"expiresIn":data.get('ttl',300),
+                     **({'startJobId':scheduler.lease['startJobId']} if 'startJobId' in scheduler.lease else {})}, JSON
+    if method == "POST" and len(segments)==4 and segments[:2]==["v1","leases"] and segments[3]=='renew':
+        data=read_json(body)
+        return 200,scheduler.renew_lease(require_id(segments[2],'lease'),data.get('ttl',300)),JSON
     if method == "POST" and len(segments) == 4 and segments[:2] == ["v1", "leases"] and segments[3] == "release":
         scheduler.release_lease(require_id(segments[2], "lease"))
         return 200, {"released": True}, JSON

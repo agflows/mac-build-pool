@@ -26,6 +26,14 @@ SUDOERS_DST = Path("/etc/sudoers.d/ios-worker")
 WORKER_DEVICE = "3C8BB98E-6383-446B-AF87-1E1282762A13"
 PERSONAL_DEVICE = "4D015300-4BAE-4E6D-89C9-BC4D454E4216"
 CODE = (
+    "tart_lease.py",
+    "egress_policy.py",
+    "http_policy.py",
+    "host_egress.py",
+    "vm_transport.py",
+    "vm_service.py",
+    "vm_runner.py",
+    "vm_launch.py",
     "policy.py",
     "config.py",
     "memory.py",
@@ -266,12 +274,16 @@ def _create_with_dscl(password: str) -> None:
 
 
 def _install_code(source: Path) -> None:
+    if LIBRARY.is_symlink():
+        raise SystemExit('Refusing an unexpected code-root symlink')
     LIBRARY.mkdir(exist_ok=True)
     os.chown(LIBRARY, 0, 0)
     LIBRARY.chmod(0o755)
     subprocess.run(["/bin/chmod", "-N", str(LIBRARY)], check=False)
     for name in CODE:
         target = LIBRARY / name
+        if target.is_symlink():
+            raise SystemExit('Refusing an unexpected code-file symlink')
         shutil.copyfile(source / name, target)
         os.chown(target, 0, 0)
         target.chmod(0o644)
@@ -321,6 +333,9 @@ def _retire_native_host_launcher() -> None:
 
 
 def _install_data() -> None:
+    for path in (DATA,*(DATA / name for name in ('work','artifacts','spool','tmp','export'))):
+        if path.is_symlink():
+            raise SystemExit('Refusing an unexpected data-directory symlink')
     uid = _uid("iosbroker")
     DATA.mkdir(exist_ok=True)
     os.chown(DATA, uid, 20)

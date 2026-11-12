@@ -29,6 +29,7 @@ from memory import sample_system
 from isolated_runner import IsolatedRunner
 from execution_policy import execution_mode, NATIVE, require_native_config
 from native_runner import NativeUserRunner
+from vm_runner import TartRunner, CONFIG as VM_CONFIG
 from scheduler import Scheduler
 
 install_import_path()
@@ -65,11 +66,15 @@ def make_app(cfg):
     if mode == NATIVE:
         require_native_config(cfg.worker)
     runner_class = NativeUserRunner if mode == NATIVE else IsolatedRunner
-    runner = runner_class(cfg.worker.device_allowlist, cfg.worker.device_denylist)
+    runner = (TartRunner(cfg.worker.device_allowlist,cfg.worker.device_denylist,cfg.worker,
+                        validation_mode=cfg.allow_loopback and cfg.listen_host=='127.0.0.1')
+              if mode != NATIVE and VM_CONFIG.exists() else
+              runner_class(cfg.worker.device_allowlist, cfg.worker.device_denylist))
     default_device = sorted(cfg.worker.device_allowlist)[0]
     roots = [cfg.worker.workspace_root, cfg.worker.spool_root, cfg.worker.artifact_root, TEMP_ROOT]
     export_root = cfg.worker.artifact_root.parent / "export"
     export_root.mkdir(mode=0o700, exist_ok=True)
+    roots.append(export_root)
     disk_used = lambda: directory_size(roots)
     scheduler = Scheduler(
         runner,

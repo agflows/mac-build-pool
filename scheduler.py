@@ -116,13 +116,40 @@ class Scheduler:
         self._wake.set()
         return job
 
-    def acquire_lease(self) -> str:
+    def acquire_lease(self, ttl: int = 300, boot_simulator: bool = False) -> str:
+        if type(ttl) is not int or not 1 <= ttl <= 300:
+            raise PolicyError('invalid_body','Lease duration must be 1 to 300 seconds.')
+        if type(boot_simulator) is not bool:
+            raise PolicyError('invalid_body','bootSimulator must be a boolean.')
         with self._lock:
             if self.running_ids or (self.lease and self.lease.get("status") == "active"):
                 raise PolicyError("session_busy", "Another session holds the simulator.")
             lease_id = _new_id()
-            self.lease = {"id": lease_id, "status": "active"}
+            hook = getattr(self.runner,'lease_acquire',None)
+            if hook:
+                hook(lease_id,ttl)
+            self.lease = {"id": lease_id, "status": "active", "expires": self.clock()+ttl,
+                          "hard_deadline":self.clock()+7200}
+            if getattr(self.runner,'vm_backend',False):
+                job=Job(id=_new_id(),kind='boot' if boot_simulator else 'vm_start',
+                        device_id=self.default_device if boot_simulator else None,lease_id=lease_id)
+                self._put_locked(job)
+                self.lease['startJobId']=job.id
+                self._wake.set()
             return lease_id
+
+    def renew_lease(self, lease_id: str, ttl: int = 300) -> dict:
+        if type(ttl) is not int or not 1 <= ttl <= 300:
+            raise PolicyError('invalid_body','Lease duration must be 1 to 300 seconds.')
+        with self._lock:
+            self._require_lease_locked(lease_id)
+            if self.clock() >= self.lease['expires']:
+                raise PolicyError('lease_required','Lease has expired.')
+            hook=getattr(self.runner,'lease_renew',None)
+            if hook:
+                hook(lease_id,ttl)
+            self.lease['expires']=min(self.clock()+ttl,self.lease['hard_deadline'])
+            return {'expiresIn':max(0,self.lease['expires']-self.clock())}
 
     def release_lease(self, lease_id: str) -> None:
         require_id(lease_id, "lease")
@@ -134,6 +161,9 @@ class Scheduler:
                 if job.lease_id == lease_id and job.status in ("queued", "waiting_for_approval"):
                     job.status = "failed"
                     job.error = "session released"
+        hook=getattr(self.runner,'lease_release',None)
+        if hook:
+            hook(lease_id)
         self._wake.set()
 
     def submit_prepare(self, revision_id: str, lease_id: str, recipe: str, public_env: dict, scheme: Optional[str] = None) -> Job:
@@ -298,6 +328,25 @@ class Scheduler:
             return {"running": len(self.running_ids), "queued": queued}
 
     def step(self) -> None:
+        expired=None
+        with self._lock:
+            if self.lease and self.lease.get('status')=='active' and self.clock()>=self.lease.get('expires',float('inf')):
+                expired=self.lease['id']
+        if expired:
+            self.release_lease(expired)
+        with self._lock:
+            active=self.lease['id'] if self.lease and self.lease.get('status')=='active' else None
+        probe=getattr(self.runner,'lease_alive',None)
+        if active and probe:
+            try:
+                alive=probe(active)
+            except Exception:
+                alive=False
+            if not alive:
+                try:
+                    self.release_lease(active)
+                except KeyError:
+                    pass
         to_shutdown: list[str] = []
         with self._lock:
             if len(self.running_ids) < self.max_running:
@@ -335,6 +384,9 @@ class Scheduler:
                 sys.stderr.write("idle shutdown failed: " + exc.__class__.__name__ + "\n")
 
     def _admit(self, job: Job, sample: MemorySample, previous: Optional[MemorySample]) -> str:
+        if (getattr(self.runner,'vm_backend',False) and job.kind!='ingest'
+                and not self.runner.vm_started() and boot_needs_approval(previous,sample,job.approved)):
+            return 'wait'
         if job.kind in ("prepare", "build", "launch", "uitest"):
             revision = self.revisions.get(job.revision_id or "")
             if revision is None:
@@ -412,6 +464,8 @@ class Scheduler:
             log = str(result.get("log", ""))[-LOG_CAP:] if isinstance(result, dict) else ""
             with self._lock:
                 current = self.jobs[job_id]
+                if current.lease_id and not self._lease_active(current.lease_id):
+                    raise PolicyError('lease_required','Lease ended before the operation completed.')
                 current.result = result if isinstance(result, dict) else {"ok": True}
                 current.log = log
                 current.exit_code = result.get("exitCode") if isinstance(result, dict) else 0
@@ -521,7 +575,8 @@ class Scheduler:
             raise PolicyError("session_busy", "That session does not hold the simulator.")
 
     def _lease_active(self, lease_id: str) -> bool:
-        return bool(self.lease and self.lease.get("id") == lease_id and self.lease.get("status") == "active")
+        return bool(self.lease and self.lease.get("id") == lease_id and self.lease.get("status") == "active"
+                    and self.clock()<self.lease.get('expires',float('inf')))
 
     def _device(self, device_id: Optional[str]) -> str:
         if device_id is None:

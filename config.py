@@ -31,6 +31,7 @@ class WorkerConfig:
     memory_limit: int = MEMORY_LIMIT
     allow_dependency_install: bool = False
     toolchain: dict[str, str] = field(default_factory=dict)
+    package_proxy: bool = False
 
 
 @dataclass
@@ -59,7 +60,7 @@ def load_worker_config(path: Path) -> WorkerConfig:
         raise PolicyError("bad_config", "device_allowlist is empty.")
     enabled = data.get("allow_dependency_install", False)
     toolchain = data.get("toolchain", {})
-    if not isinstance(enabled, bool) or not isinstance(toolchain, dict):
+    if not isinstance(enabled, bool) or not isinstance(toolchain, dict) or not isinstance(data.get("package_proxy", False), bool):
         raise PolicyError("bad_config", "Invalid dependency preparation configuration.")
     if any(not isinstance(k, str) or not isinstance(v, str) or "\x00" in v for k, v in toolchain.items()):
         raise PolicyError("bad_config", "Toolchain entries must be path strings.")
@@ -76,6 +77,7 @@ def load_worker_config(path: Path) -> WorkerConfig:
         memory_limit=min(int(data.get("memory_limit_bytes", MEMORY_LIMIT)), MEMORY_LIMIT),
         allow_dependency_install=enabled,
         toolchain=toolchain,
+        package_proxy=data.get("package_proxy", False),
     )
 
 
