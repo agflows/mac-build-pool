@@ -135,6 +135,7 @@ test_nonzero_graceful_stop_can_still_verify_termination (test_tart_lease.Offline
 test_activation_rejects_a_report_for_another_configuration (test_vm_activation.ActivationTest) ... ok
 test_public_job_rechecks_proof_after_submission (test_vm_activation.ActivationTest) ... ok
 test_replacing_base_requires_explicit_idle_maintenance (test_vm_activation.ActivationTest) ... ok
+test_watch_configuration_requires_watch_acceptance (test_vm_activation.ActivationTest) ... ok
 test_expiry_destroys_the_whole_guest_without_renewal (test_vm_service.VMServiceTest) ... ok
 test_idle_simulator_queries_and_shutdown_never_start_guest (test_vm_service.VMServiceTest) ... ok
 test_lease_device_mapping_and_one_ingest_per_revision (test_vm_service.VMServiceTest) ... ok
@@ -144,6 +145,7 @@ test_rejected_second_lease_does_not_forget_staged_revision (test_vm_service.VMSe
 test_reported_guest_timeout_destroys_guest_and_preserves_failure (test_vm_service.VMServiceTest) ... ok
 test_status_and_reservation_do_not_start_a_vm (test_vm_service.VMServiceTest) ... ok
 test_transport_timeout_stops_guest_and_does_not_fall_back (test_vm_service.VMServiceTest) ... ok
+test_watch_mapping_cannot_alias_the_phone (test_vm_service.VMServiceTest) ... ok
 test_watch_only_accepts_the_public_logical_id (test_vm_service.VMServiceTest) ... ok
 test_approved_binary_tunnel_and_connect_header_order (test_vm_transport.RelayTest) ... ok
 test_disallowed_tunnel_is_forbidden (test_vm_transport.RelayTest) ... ok
@@ -161,6 +163,6 @@ test_warning_does_not_boot_until_approved (test_worker.WorkerGuardTest) ... ok
 test_worker_config_rejects_a_token (test_worker.WorkerGuardTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 161 tests in 10.977s
+Ran 163 tests in 10.358s
 
 OK

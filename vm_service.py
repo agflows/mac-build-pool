@@ -129,14 +129,16 @@ class BuildTart(OfflineTart):
 
 class Service:
     def __init__(self, backend, *, logical_device, guest_device, watch_devices=None):
-        mapping = {logical_device: guest_device}
+        logical_device = check_device(logical_device, {logical_device}, {PERSONAL})
+        guest_device = check_device(guest_device, {guest_device}, {PERSONAL})
+        self.devices = {logical_device: guest_device}
         if watch_devices is not None:
             watch_logical, watch_guest = watch_devices
+            watch_logical = check_device(watch_logical, {watch_logical}, {PERSONAL})
+            watch_guest = check_device(watch_guest, {watch_guest}, {PERSONAL})
             if watch_logical == logical_device or watch_guest == guest_device:
                 raise LeaseError('iPhone and Watch mappings must be distinct')
-            mapping[watch_logical] = watch_guest
-        self.devices = {check_device(key,{key},{PERSONAL}):check_device(value,{value},{PERSONAL})
-                        for key,value in mapping.items()}
+            self.devices[watch_logical] = watch_guest
         self.backend = backend
         self.controller = LeaseController(backend,max_ttl=300,max_lifetime=7200)
         self.job_lock = threading.Lock()

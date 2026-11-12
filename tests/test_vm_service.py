@@ -63,6 +63,12 @@ class VMServiceTest(unittest.TestCase):
         self.service.dispatch({'op': 'boot', 'lease_id': LEASE, 'device_id': watch})
         self.assertEqual(self.backend.operation.call_args.args[1]['device_id'], guest_watch)
 
+    def test_watch_mapping_cannot_alias_the_phone(self):
+        watch = 'A23FD418-22F2-4BA4-9E87-91E86A9D3F09'
+        with self.assertRaises(LeaseError):
+            Service(self.backend, logical_device=WORKER, guest_device=GUEST,
+                    watch_devices=(watch, GUEST.lower()))
+
     def test_expiry_destroys_the_whole_guest_without_renewal(self):
         self.reserve()
         self.service.dispatch({'op':'boot','lease_id':LEASE,'device_id':WORKER})

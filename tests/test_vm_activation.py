@@ -78,3 +78,26 @@ class ActivationTest(unittest.TestCase):
             runner.run(SimpleNamespace(kind='vm_start'))
         self.assertEqual(error.exception.code, 'isolation_required')
         runner._call.assert_not_called()
+
+    def test_watch_configuration_requires_watch_acceptance(self):
+        installer = self.installer
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = b'{"watch_devices":["logical","guest"]}'
+            (root / 'vm.json').write_bytes(config)
+            png = b'\x89PNG\r\n\x1a\n'
+            screenshot = root / 'simulator.png'
+            screenshot.write_bytes(png)
+            report = root / 'report.json'
+            report.write_text(json.dumps({
+                'appBuildPassed': True, 'securityNegativesPassed': True,
+                'leaseExpiryPassed': True, 'codeSHA256': 'installed-code',
+                'vmConfigSHA256': hashlib.sha256(config).hexdigest(),
+                'screenshot': str(screenshot), 'screenshotSHA256': hashlib.sha256(png).hexdigest(),
+            }))
+            with patch('cli.read_secret', return_value='fixture'), patch.object(installer, 'LIB', root), \
+                 patch.object(installer, 'idle'), patch.object(installer, 'code_hash', return_value='installed-code'), \
+                 patch.object(installer, 'root_file') as root_file:
+                with self.assertRaisesRegex(SystemExit, 'requires successful watchOS acceptance'):
+                    installer.activate(SimpleNamespace(report=report))
+                root_file.assert_not_called()
