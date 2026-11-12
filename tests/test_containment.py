@@ -21,6 +21,7 @@ from containment import (
     directory_size,
     launch_path_problems,
     pin_sys_path,
+    run_contained,
     worker_child_env,
 )
 from policy import PolicyError
@@ -31,6 +32,12 @@ WORKER = "3C8BB98E-6383-446B-AF87-1E1282762A13"
 
 
 class ContainmentTest(unittest.TestCase):
+    def test_timed_out_command_retains_its_diagnostic_output(self) -> None:
+        command = [sys.executable, "-c", "import time; print('compile reached link', flush=True); time.sleep(30)"]
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(TimeoutError, "compile reached link"):
+                run_contained(command, timeout=1, env={}, cwd=Path(directory))
+
     def test_sudo_argv_is_exact_and_isolated(self) -> None:
         self.assertEqual(
             SUDO_ARGV,

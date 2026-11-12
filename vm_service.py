@@ -20,6 +20,7 @@ _CODE_ROOT=str(Path(__file__).resolve().parent)
 if _CODE_ROOT not in sys.path:
     sys.path.insert(0,_CODE_ROOT)
 
+from containment import BUILD_TIMEOUT
 from egress_policy import PACKAGE_HOSTS
 from execution_policy import require_protected_file
 from host_egress import Relay
@@ -109,7 +110,7 @@ class BuildTart(OfflineTart):
             super().stop(name)
 
     def operation(self, name, request):
-        timeout = {'prepare':2700,'build':1860,'uitest':1380,'launch':600,'boot':420,
+        timeout = {'prepare':2700,'build':BUILD_TIMEOUT+60,'uitest':1380,'launch':600,'boot':420,
                    'screenshot':480,'reset':300}.get(request['op'],120)
         code, stdout, stderr = communicate([self.binary,'exec','-i',name,'/usr/bin/sudo','-n','-u','iosagent',
             '/usr/bin/python3','-I','/Library/ios-worker/guest_rpc.py'],json.dumps(request).encode()+b'\n',

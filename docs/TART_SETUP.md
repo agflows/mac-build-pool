@@ -26,6 +26,8 @@ its RAM; a powered-off image uses disk only. The default installed profile uses
 4 GiB and four virtual CPUs, serial builds and a 100 GB sparse guest disk.
 Warning pressure requires owner resource approval before starting the guest;
 urgent pressure stops this guest without touching personal apps or simulators.
+Builds have a 45-minute deadline, including Xcode scheme discovery. A timed-out
+command returns its bounded diagnostic output before the controller reaps its guest.
 
 ## Boundary
 

@@ -20,7 +20,7 @@ PROCESS_LIMIT = 512
 LOG_CAP = 64 * 1024
 STDOUT_CAP = 1024 * 1024
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
-BUILD_TIMEOUT = 1800
+BUILD_TIMEOUT = 2700
 PREPARE_TIMEOUT = 2700
 TEST_TIMEOUT = 900
 DEFAULT_TIMEOUT = 120
@@ -384,7 +384,8 @@ def run_contained(
         if process.stderr:
             process.stderr.close()
     if timed_out:
-        raise TimeoutError("command timed out")
+        detail = (bytes(stdout) + b"\n" + bytes(stderr))[-(LOG_CAP - 128):].decode("utf-8", "replace").strip()
+        raise TimeoutError(f"{detail}\n{Path(argv[0]).name} timed out after {timeout} seconds".lstrip())
     if over_disk:
         raise RuntimeError("storage_limit")
     return subprocess.CompletedProcess(argv, process.returncode, bytes(stdout), bytes(stderr))

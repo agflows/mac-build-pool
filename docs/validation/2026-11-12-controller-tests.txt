@@ -30,6 +30,7 @@ test_rlimit_refusal_does_not_abort (test_containment.ContainmentTest) ... ok
 test_runner_refuses_a_different_command (test_containment.ContainmentTest) ... ok
 test_sparse_files_count_allocated_bytes_once (test_containment.ContainmentTest) ... ok
 test_sudo_argv_is_exact_and_isolated (test_containment.ContainmentTest) ... ok
+test_timed_out_command_retains_its_diagnostic_output (test_containment.ContainmentTest) ... ok
 test_untrusted_code_directory_is_rejected (test_containment.ContainmentTest) ... ok
 test_host_public_address_and_mixed_dns_answers_are_denied (test_egress.EgressTest) ... ok
 test_only_exact_package_hosts_and_tls_port (test_egress.EgressTest) ... ok
@@ -155,6 +156,6 @@ test_warning_does_not_boot_until_approved (test_worker.WorkerGuardTest) ... ok
 test_worker_config_rejects_a_token (test_worker.WorkerGuardTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 155 tests in 8.695s
+Ran 156 tests in 9.817s
 
 OK
