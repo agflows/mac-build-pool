@@ -4,7 +4,8 @@ import threading
 import unittest
 from unittest.mock import Mock, call, patch
 
-from vm_service import Service, STOP_GUEST_SIMULATORS
+from vm_service import BuildTart, Service, STOP_GUEST_SIMULATORS
+from vm_runner import TartRunner
 from tart_lease import LeaseError
 from policy import PolicyError
 
@@ -171,7 +172,7 @@ class VMServiceTest(unittest.TestCase):
         self.assertIn('rev1',self.service.loaded)
 
 
-class GuestSimulatorShutdownTest(unittest.TestCase):
+class GuestSimulatorTest(unittest.TestCase):
     def test_waits_for_both_phone_and_watch_to_shut_down(self):
         with patch('os.chdir'), patch('time.sleep'), \
                 patch.object(subprocess, 'check_output', side_effect=[
@@ -183,3 +184,16 @@ class GuestSimulatorShutdownTest(unittest.TestCase):
         shutdown.assert_called_once_with(['/usr/bin/xcrun', 'simctl', 'shutdown', 'all'], check=True, timeout=60)
         self.assertEqual(list_devices.call_args_list[0].kwargs['timeout'], 90)
         self.assertEqual(list_devices.call_count, 3)
+
+    def test_broker_allows_the_full_controller_boot_probe_timeout(self):
+        runner = TartRunner({WORKER}, set(), None)
+        runner.lease = LEASE
+        runner._call = Mock(side_effect=[{'state': 'active'}, {'booted': True}])
+        self.assertTrue(runner.is_booted(WORKER))
+
+        backend = object.__new__(BuildTart)
+        backend.binary = '/trusted/tart'
+        backend.env = {}
+        with patch('vm_service.communicate', return_value=(0, b'{"ok":true,"booted":true}', b'')) as transport:
+            backend.operation('lease-fixture', {'op': 'booted', 'device_id': GUEST})
+        self.assertGreater(runner._call.call_args.kwargs['timeout'], transport.call_args.kwargs['timeout'])

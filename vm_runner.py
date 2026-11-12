@@ -98,7 +98,9 @@ class TartRunner:
         state=self._call({'op':'status'})
         if state.get('state')!='active' or not self.lease:
             return False
-        return self._call({'op':'booted','lease_id':self.lease,'device_id':device_id}).get('booted') is True
+        # The controller gives CoreSimulator up to 120 seconds to answer.
+        result = self._call({'op': 'booted', 'lease_id': self.lease, 'device_id': device_id}, timeout=135)
+        return result.get('booted') is True
 
     def vm_started(self):
         return self._call({'op':'status'}).get('state')=='active'
