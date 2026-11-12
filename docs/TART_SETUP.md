@@ -28,10 +28,10 @@ virtual CPUs and a 100 GB sparse guest disk. Use `--memory-mib 8192` for the
 8 GiB profile. The host and guest each manage swap on their startup disks.
 
 The Tart broker runs one job at a time. The controller shuts down and verifies
-all guest simulators before preparation or compilation. To use a simulator
-again, request a boot or launch after the build finishes. Warning pressure
-requires owner resource approval before starting the guest. Urgent pressure
-stops this guest without touching personal apps or simulators.
+all guest simulators before preparation or compilation. A build with
+`bootSimulator` enabled queues a separate simulator boot after it succeeds.
+Warning pressure requires owner resource approval before starting the guest.
+Urgent pressure stops this guest without touching personal apps or simulators.
 Builds have a 45-minute deadline, including Xcode scheme discovery. A timed-out
 command returns its bounded diagnostic output before the controller reaps its guest.
 
