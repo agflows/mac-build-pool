@@ -67,7 +67,7 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let session = NSMenuItem()
     private let disk = NSMenuItem()
     private let memory = NSMenuItem()
-    private lazy var end = NSMenuItem(title: "End Session…", action: #selector(endSession), keyEquivalent: "")
+    private lazy var end = NSMenuItem(title: "End Session", action: #selector(endSession), keyEquivalent: "")
     private var lease: String?
     private var busy = false
     private var timer: Timer?
@@ -130,12 +130,6 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func endSession() {
         guard let lease, !busy else { return }
-        let confirmation = NSAlert()
-        confirmation.messageText = "End \(session.title)?"
-        confirmation.informativeText = "The worker will stop the VM and remove its disposable disk."
-        confirmation.addButton(withTitle: "End Session")
-        confirmation.addButton(withTitle: "Cancel")
-        guard confirmation.runModal() == .alertFirstButtonReturn else { return }
         busy = true
         end.isEnabled = false
         state.title = "Stopping"
@@ -144,9 +138,9 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { [weak self] in
                 self?.busy = false
                 if reply?.ok != true {
-                    let alert = NSAlert()
-                    alert.messageText = "Couldn’t end the session"
-                    alert.runModal()
+                    self?.state.title = "Couldn’t end the session"
+                    self?.end.isEnabled = true
+                    return
                 }
                 self?.refresh()
             }
