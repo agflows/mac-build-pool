@@ -61,9 +61,10 @@ The local control socket accepts the configured owner's macOS UID and
 exposes status, release, and Copy Agent Instructions. The copy action reads
 the public agent token on demand and copies it with the Tailscale URL and
 current remote readiness. It does not include the operator or validation
-credentials. Memory is the combined macOS process footprint of the dedicated
-service accounts, including the virtualization process. Disk is
-allocated storage for the installed worker and its data. Retired native
+credentials. Total memory adds the menu app's macOS memory footprint to the
+combined footprint of both dedicated service accounts. It includes the build
+listener, VM controller, virtualization process and helpers under those accounts.
+Disk is allocated storage for the installed worker and its data. Retired native
 workspaces and macOS account caches are outside that measurement. APFS shared
 blocks can be counted in more than one image while a lease is active.
 

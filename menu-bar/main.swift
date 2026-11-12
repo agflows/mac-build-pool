@@ -12,6 +12,15 @@ private struct OwnerReply: Decodable {
     let instructions: String?
 }
 
+private func menuMemoryFootprint() -> Int64? {
+    var usage = rusage_info_v0()
+    let result = withUnsafeMutableBytes(of: &usage) { buffer in
+        proc_pid_rusage(getpid(), RUSAGE_INFO_V0, buffer.baseAddress?.assumingMemoryBound(to: rusage_info_t?.self))
+    }
+    guard result == 0 else { return nil }
+    return Int64(exactly: usage.ri_phys_footprint)
+}
+
 private func request(_ operation: String, lease: String? = nil) -> OwnerReply? {
     guard let broker = getpwnam("iosbroker") else { return nil }
     let brokerUID = broker.pointee.pw_uid
@@ -108,12 +117,17 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lease = reply?.leaseId
         session.title = reply?.sessionName ?? "No active session"
         disk.title = "Disk  " + format(reply?.diskBytes, style: .file)
-        let showsFootprint = reply?.memoryMetric == "footprint"
-        let memoryLabel = showsFootprint ? "Memory footprint" : "Resident memory"
-        memory.title = memoryLabel + "  " + format(reply?.memoryBytes, style: .memory)
-        memory.toolTip = showsFootprint
-            ? "Combined macOS memory footprint for the broker, VM, and their helper processes."
-            : "RAM currently resident for the worker processes."
+        if reply?.memoryMetric == "footprint", let workerBytes = reply?.memoryBytes,
+           let menuBytes = menuMemoryFootprint() {
+            memory.title = "Total memory  " + format(workerBytes + menuBytes, style: .memory)
+            memory.toolTip = "macOS memory footprint for the build listener, VM controller, VM, worker helpers, and menu app."
+        } else if reply?.memoryMetric == nil, let workerBytes = reply?.memoryBytes {
+            memory.title = "Worker resident memory  " + format(workerBytes, style: .memory)
+            memory.toolTip = "RAM currently resident for the worker processes."
+        } else {
+            memory.title = "Total memory  Unavailable"
+            memory.toolTip = nil
+        }
         end.isEnabled = lease != nil && !busy
         let symbol = lease == nil ? "hammer" : "hammer.fill"
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Mac Build Pool, \(status)")
