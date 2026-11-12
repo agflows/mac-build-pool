@@ -3,6 +3,16 @@ from egress_policy import EgressDenied
 from http_policy import HTTPGate
 
 class HTTPPolicyTest(unittest.TestCase):
+    def test_react_native_mirror_only_serves_versioned_ios_artifacts(self):
+        host = b' HTTP/1.1\r\nHost: repo.reactnative.dev\r\n\r\n'
+        artifact = b'/maven2/com/facebook/react/react-native-artifacts/0.88.1/react-native-artifacts-0.88.1-reactnative-core-release.tar.gz'
+        checksum = b'/maven2/com/facebook/hermes/hermes-ios/260318099.0.5/hermes-ios-260318099.0.5-hermes-ios-debug.tar.gz.sha1'
+        for path in (artifact, checksum):
+            self.assertIn(path, HTTPGate('repo.reactnative.dev').feed(b'HEAD ' + path + host))
+        for path in (b'/maven2/com/example/package', artifact.replace(b'artifacts-0.88.1', b'artifacts-0.88.2')):
+            with self.subTest(path=path), self.assertRaises(EgressDenied):
+                HTTPGate('repo.reactnative.dev').feed(b'GET ' + path + host)
+
     def test_jsdelivr_allows_only_cocoapods_spec_reads(self):
         host = b'\r\nHost: cdn.jsdelivr.net\r\n\r\n'
         spec = b'/cocoa/Specs/a/9/3/SocketRocket/0.7.1/SocketRocket.podspec.json'

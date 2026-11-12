@@ -34,6 +34,7 @@ class LeaseController:
         self.max_ttl = max_ttl
         self.max_lifetime = max_lifetime
         self.lock = threading.RLock()
+        self.cleanup_lock = threading.Lock()
         self.lease = None
 
     def _ttl(self, ttl):
@@ -137,10 +138,13 @@ class LeaseController:
     def _cleanup(self, lease):
         # Backend serializes start/stop/delete and records cancellation even if
         # start has not launched yet. Stop errors must never lead to deletion.
-        self.backend.stop(lease['vm'])
-        self.backend.delete(lease['vm'])
-        with self.lock:
-            if self.lease is lease:
+        with self.cleanup_lock:
+            with self.lock:
+                if self.lease is not lease:
+                    return
+            self.backend.stop(lease['vm'])
+            self.backend.delete(lease['vm'])
+            with self.lock:
                 self.lease = None
 
 
@@ -227,32 +231,38 @@ class OfflineTart:
         with self.lock:
             self.cancelled.add(name)
             process = self.processes.get(name)
-            path_exists = (self.home / 'vms' / name).exists()
-            if process is None and path_exists:
-                info = json.loads(self.call('get', name, '--format', 'json').stdout)
-                if info.get('Running') or str(info.get('State', '')).lower() == 'running':
-                    self.call('stop', name, '--timeout', '15', timeout=30)
-            if process is not None and process.poll() is None:
+            vm_path = self.home / 'vms' / name
+            owned_process_running = process is not None and process.poll() is None
+            stop_error = None
+            if owned_process_running or (vm_path.exists() and self._running(name)):
                 try:
                     self.call('stop', name, '--timeout', '15', timeout=30)
-                finally:
+                except subprocess.SubprocessError as exc:
+                    stop_error = exc
+            if owned_process_running:
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
                     try:
-                        process.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
-                        process.wait(timeout=10)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=10)
             # Check actual Tart state too, so orphaned processes aren't ignored.
-            result = self.call('get', name, '--format', 'json') if (self.home / 'vms' / name).exists() else None
-            if result:
-                info = json.loads(result.stdout)
-                if info.get('Running') or str(info.get('State', '')).lower() == 'running':
-                    raise LeaseError('VM termination not verified')
+            if vm_path.exists() and self._running(name):
+                raise LeaseError('VM termination not verified') from stop_error
             if name in self.drains:
                 stop, thread = self.drains.pop(name)
                 stop.set()
                 thread.join(timeout=2)
             if name in self.logs:
                 self.logs.pop(name).close()
+
+    def _running(self, name):
+        info = json.loads(self.call('get', name, '--format', 'json', timeout=10).stdout)
+        if type(info.get('Running')) is not bool or info.get('State') not in {'running', 'stopped', 'suspended'}:
+            raise LeaseError('Tart returned an unrecognized VM state')
+        return info['Running'] or info['State'] == 'running'
 
     def delete(self, name):
         with self.lock:

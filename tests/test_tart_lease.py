@@ -1,9 +1,12 @@
 """Deterministic lease lifecycle tests; actual Tart trial is reported separately."""
+from pathlib import Path
+import subprocess
+import tempfile
 import threading
 import unittest
 from unittest.mock import Mock
 
-from tart_lease import LeaseController, LeaseError
+from tart_lease import LeaseController, LeaseError, OfflineTart
 
 
 class LeaseTest(unittest.TestCase):
@@ -85,6 +88,28 @@ class LeaseTest(unittest.TestCase):
         self.assertTrue(failures)
         self.assertEqual(self.controller.status()['state'], 'idle')
 
+    def test_release_and_watchdog_cleanup_once(self):
+        lease = self.controller.acquire()
+        stopping, finish = threading.Event(), threading.Event()
+
+        def stop(name):
+            stopping.set()
+            self.assertTrue(finish.wait(2))
+
+        self.backend.stop.side_effect = stop
+        release = threading.Thread(target=self.controller.release, args=(lease['leaseId'],))
+        release.start()
+        self.assertTrue(stopping.wait(1))
+        tick = threading.Thread(target=self.controller.tick)
+        tick.start()
+        finish.set()
+        for thread in (release, tick):
+            thread.join(2)
+            self.assertFalse(thread.is_alive())
+        self.backend.stop.assert_called_once_with(lease['vm'])
+        self.backend.delete.assert_called_once_with(lease['vm'])
+        self.assertEqual(self.controller.status()['state'], 'idle')
+
     def test_bad_duration_never_starts_vm(self):
         for ttl in (True, 0, -1, 301, '60', float('nan')):
             with self.assertRaises(LeaseError):
@@ -101,3 +126,21 @@ class LeaseTest(unittest.TestCase):
         self.controller.close()
         self.backend.stop.assert_called_with(lease['vm'])
         self.backend.delete.assert_called_with(lease['vm'])
+
+
+class OfflineTartTest(unittest.TestCase):
+    def test_nonzero_graceful_stop_can_still_verify_termination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            name = 'lease-0123456789abcdef'
+            (home / 'vms' / name).mkdir(parents=True)
+            backend = OfflineTart(home / 'tart', home, 'base', home / 'logs')
+            process = backend.processes[name] = Mock()
+            process.poll.return_value = None
+            backend.call = Mock(side_effect=[
+                subprocess.CalledProcessError(1, 'tart stop'),
+                subprocess.CompletedProcess([], 0, stdout='{"Running": false, "State": "stopped"}'),
+            ])
+            backend.stop(name)
+            process.wait.assert_called_once_with(timeout=10)
+            self.assertEqual(backend.call.call_args.args[:2], ('get', name))

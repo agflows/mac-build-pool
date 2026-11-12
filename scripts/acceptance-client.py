@@ -58,6 +58,8 @@ try:
                  '/usr/bin/sudo','-n','-u','iosagent','/usr/bin/python3','-I','-']
         probe_options=['--host-ip','192.168.0.142','--canary-path',
                        '/Users/leolurch/Library/Application Support/mac-build-pool/vm-trial/host-canary.txt']
+        if args.recipe == 'expo-ios':
+            probe_options.append('--check-react-native')
         code,output,error=communicate(command+probe_options,probe,env={'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'},timeout=180,cap=1024*1024)
         (args.output/'guest-preflight.json').write_bytes(output)
         if code or json.loads(output).get('passed') is not True:

@@ -12,6 +12,18 @@ COCOAPODS_SPEC_PATH = re.compile(
     r'[A-Za-z0-9][A-Za-z0-9_.+-]*/[0-9][A-Za-z0-9_.+-]*/'
     r'[A-Za-z0-9][A-Za-z0-9_.+-]*\.podspec\.json'
 )
+REACT_NATIVE_ARTIFACT_PATH = re.compile(
+    r'/maven2/com/facebook/'
+    r'(?:react/react-native-artifacts/(?P<rn>\d+\.\d+\.\d+(?:-rc\.\d+)?)/'
+    r'react-native-artifacts-(?P=rn)-reactnative-(?:core-(?:dSYM-)?|dependencies-)'
+    r'|hermes/hermes-ios/(?P<hermes>\d+\.\d+\.\d+(?:-rc\.\d+)?)/'
+    r'hermes-ios-(?P=hermes)-hermes-ios-)'
+    r'(?:debug|release)\.tar\.gz(?:\.sha1)?'
+)
+PACKAGE_PATH_SCOPES = {
+    'cdn.jsdelivr.net': COCOAPODS_SPEC_PATH,
+    'repo.reactnative.dev': REACT_NATIVE_ARTIFACT_PATH,
+}
 
 class HTTPGate:
     def __init__(self,host):
@@ -66,10 +78,11 @@ class HTTPGate:
         self.remaining=int(lengths[0]) if lengths else 0
         if self.remaining>8*1024*1024 or len(body)>self.remaining:
             raise EgressDenied('request body exceeds cap or is pipelined')
-        if self.host == 'cdn.jsdelivr.net' and (
-            method not in {'GET', 'HEAD'} or self.remaining or not COCOAPODS_SPEC_PATH.fullmatch(first[1])
+        scope = PACKAGE_PATH_SCOPES.get(self.host)
+        if scope and (
+            method not in {'GET', 'HEAD'} or self.remaining or not scope.fullmatch(first[1])
         ):
-            raise EgressDenied('jsDelivr is restricted to CocoaPods spec downloads')
+            raise EgressDenied('request is outside the approved package download paths')
         if self.host in PACKAGE_HOSTS and method not in {'GET','HEAD'}:
             if not (self.host=='github.com' and method=='POST' and first[1].split('?',1)[0].endswith('/git-upload-pack')):
                 raise EgressDenied('package hosts permit download requests only')

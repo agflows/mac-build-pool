@@ -242,6 +242,7 @@ def serve(service, path: Path, stop, mode=0o600):
                 slots.release()
         def watchdog():
             last_memory_check=0
+            last_failure_log=None
             while not stop.wait(0.25):
                 try:
                     service.controller.tick()
@@ -259,9 +260,13 @@ def serve(service, path: Path, stop, mode=0o600):
                         elif shutil.disk_usage(service.backend.home).free<2*1024**3:
                             service.last_stop_reason='host free disk below 2 GiB'
                             service.controller.close()
-                except Exception:
+                except Exception as exc:
                     # Cleanup remains pending; replacement leases are blocked.
-                    pass
+                    now=time.monotonic()
+                    if last_failure_log is None or now-last_failure_log>=30:
+                        print(f'VM watchdog failed: {type(exc).__name__}: {str(exc)[-500:]}',
+                              file=sys.stderr, flush=True)
+                        last_failure_log=now
         threading.Thread(target=watchdog,daemon=True).start()
         try:
             while not stop.is_set():

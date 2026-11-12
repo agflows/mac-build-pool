@@ -14,7 +14,7 @@ PACKAGE_HOSTS = frozenset({
     'rubygems.org', 'index.rubygems.org', 'rubygems.global.ssl.fastly.net',
     'cdn.cocoapods.org', 'trunk.cocoapods.org', 'storage.googleapis.com',
     'repo.maven.apache.org', 'repo1.maven.org', 'dl.google.com',
-    'pub.dev', 'cdn.jsdelivr.net',
+    'pub.dev', 'cdn.jsdelivr.net', 'repo.reactnative.dev',
 })
 
 

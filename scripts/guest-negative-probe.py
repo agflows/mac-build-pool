@@ -20,6 +20,7 @@ require_worker_execution()
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--host-ip',action='append',default=[])
 p.add_argument('--canary-path',action='append',default=[])
+p.add_argument('--check-react-native', action='store_true')
 args=p.parse_args()
 results={}
 
@@ -69,5 +70,12 @@ result=subprocess.run([*proxy,'https://registry.npmjs.org/expo/58.0.23'],capture
 record('approved-package-fetch',result.returncode==0 and result.stdout=='200')
 result=subprocess.run([*proxy,'--header','Host: example.com','https://registry.npmjs.org/expo/58.0.23'],capture_output=True,text=True)
 record('host-fronting-blocked',result.stdout=='403')
+if args.check_react_native:
+    mirror = 'https://repo.reactnative.dev'
+    artifact = '/maven2/com/facebook/react/react-native-artifacts/0.88.1/react-native-artifacts-0.88.1-reactnative-core-debug.tar.gz'
+    allowed = subprocess.run([*proxy, '--head', mirror+artifact], capture_output=True, text=True)
+    denied = subprocess.run([*proxy, '--head', mirror+'/maven2/com/example/unrelated'], capture_output=True, text=True)
+    record('react-native-prebuilt-available', allowed.returncode == 0 and allowed.stdout == '200')
+    record('react-native-unrelated-path-denied', denied.returncode == 0 and denied.stdout == '403')
 print(json.dumps({'passed':all(results.values()),'checks':results},sort_keys=True))
 raise SystemExit(0 if all(results.values()) else 1)

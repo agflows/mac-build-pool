@@ -172,12 +172,22 @@ def stage(args):
             raise SystemExit('Installed Tart differs from the reviewed runtime; review before replacing it')
     else:
         shutil.copytree(runtime/'tart.app',destination,symlinks=True)
+        for directory,dirs,files in os.walk(destination,followlinks=False):
+            os.chown(directory,0,0)
+            os.chmod(directory,0o755)
+            for name in files:
+                path=Path(directory)/name
+                if not path.is_symlink():
+                    os.chown(path,0,0)
+                    path.chmod(0o755 if os.access(path,os.X_OK) else 0o644)
+    # Existing signed bundles may be protected by macOS App Management.
+    # Audit their ownership and modes without rewriting the same permissions.
     for directory,dirs,files in os.walk(destination,followlinks=False):
-        os.chown(directory,0,0);os.chmod(directory,0o755)
-        for name in files:
-            path=Path(directory)/name
-            if not path.is_symlink():
-                os.chown(path,0,0);path.chmod(0o755 if os.access(path,os.X_OK) else 0o644)
+        paths=[Path(directory),*(Path(directory)/name for name in files)]
+        for path in paths:
+            info=path.lstat()
+            if info.st_uid!=0 or (not stat.S_ISLNK(info.st_mode) and info.st_mode&0o022):
+                raise SystemExit('Installed Tart bundle is not root-controlled')
     run(['/usr/bin/codesign','--verify','--deep','--strict',str(destination)])
     tart_home=VMHOME/'.tart'
     target=tart_home/'vms/worker-base'
@@ -202,7 +212,7 @@ def stage(args):
     backend=urllib.parse.urlsplit(public['EXPO_PUBLIC_SUPABASE_URL'])
     if backend.scheme!='https' or not backend.hostname:raise SystemExit('Public backend must use HTTPS')
     cfg={'tart':str(destination/'Contents/MacOS/tart'),'home':str(tart_home),'base':'worker-base',
-         'socket':str(control/'vm.sock'),'logs':str(VMHOME/'logs'),'memory_mb':6144,
+         'socket':str(control/'vm.sock'),'logs':str(VMHOME/'logs'),'memory_mb':args.memory_mib,
          'logical_device':install.WORKER_DEVICE,'guest_device':(runtime/'provisioning/guest-device.txt').read_text().strip(),
          'allowed_hosts':sorted(PACKAGE_HOSTS|{backend.hostname})}
     disk=target/'disk.img'
@@ -281,6 +291,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--trial-root',type=Path,required=True)
     parser.add_argument('--public-env',type=Path,required=True)
+    parser.add_argument('--memory-mib',type=int,choices=(4096,6144,8192),default=4096)
     parser.add_argument('--activate',action='store_true')
     parser.add_argument('--report',type=Path)
     args=parser.parse_args()

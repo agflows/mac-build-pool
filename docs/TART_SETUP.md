@@ -21,8 +21,8 @@ lease cannot be revived. Daemon restart reaps only its own `lease-*` guests.
 Only the small broker/controller remains while idle. The guest has a configured
 4, 6 or 8 GiB RAM ceiling; it does not resize itself to each compiler's measured
 needs. Its macOS overhead exists while the lease is active. Stopping it releases
-its RAM; a powered-off image uses disk only. The initial installed profile uses
-6 GiB and four virtual CPUs, serial builds and a 100 GB sparse guest disk.
+its RAM; a powered-off image uses disk only. The default installed profile uses
+4 GiB and four virtual CPUs, serial builds and a 100 GB sparse guest disk.
 Warning pressure requires owner resource approval before starting the guest;
 urgent pressure stops this guest without touching personal apps or simulators.
 
