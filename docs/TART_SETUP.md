@@ -31,9 +31,10 @@ command returns its bounded diagnostic output before the controller reaps its gu
 
 ## Apple Watch simulators
 
-Use the matching Apple watchOS 26.5 arm64 simulator image with
-`scripts/provision-tart.py --watch-runtime`. The image is imported inside the
-guest, and the worker Apple Watch is paired with the dedicated worker iPhone.
+Use Xcode's complete Apple watchOS 26.5 arm64 `.exportedBundle` with
+`scripts/provision-tart.py --watch-runtime`. The bundle preserves Apple's
+verification metadata. Xcode imports it inside the guest and the worker Apple
+Watch is paired with the dedicated worker iPhone.
 The host broker exposes the logical watch device in `GET /v1/health` when the
 reviewed base contains the configured Watch.
 

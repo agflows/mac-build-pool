@@ -32,7 +32,7 @@ def main():
     p.add_argument('--node',type=Path,required=True)
     p.add_argument('--bun',type=Path,required=True)
     p.add_argument('--runtime',type=Path,required=True)
-    p.add_argument('--watch-runtime',type=Path,help='Apple watchOS 26.5 arm64 simulator runtime disk image')
+    p.add_argument('--watch-runtime',type=Path,help='Apple watchOS 26.5 arm64 simulator runtime export')
     p.add_argument('--flutter',type=Path,help='Verified official arm64 Flutter SDK archive')
     p.add_argument('--keep-failed',action='store_true',help='Keep only a stopped trusted provisioning guest for diagnosis/resume')
     p.add_argument('--resume',help='Resume the last trusted provisioning guest; never accepts a project lease guest')
@@ -216,11 +216,20 @@ def main():
             guest(['/usr/bin/sudo','-n','/bin/rm','-f','/private/tmp/worker-ios-runtime.dmg'])
         if args.watch_runtime and not progress.get('watch_runtime'):
             print('Importing the Apple watchOS simulator runtime',flush=True)
-            upload_file(args.watch_runtime,'/private/tmp/worker-watch-runtime.dmg')
-            guest(['/usr/bin/sudo','-n','/bin/chmod','644','/private/tmp/worker-watch-runtime.dmg'])
-            guest(['/usr/bin/sudo','-n','/usr/bin/xcrun','simctl','runtime','add','/private/tmp/worker-watch-runtime.dmg','--move'],timeout=900)
+            staging=Path('/private/tmp/worker-watch.exportedBundle')
+            if args.watch_runtime.is_symlink() or not args.watch_runtime.is_dir():
+                raise RuntimeError('Provide the complete Apple .exportedBundle for watchOS')
+            for source_file in sorted(args.watch_runtime.rglob('*')):
+                if source_file.is_symlink():
+                    raise RuntimeError('Unexpected symlink in the exported runtime')
+                if source_file.is_file():
+                    destination=staging/source_file.relative_to(args.watch_runtime)
+                    guest(['/usr/bin/sudo','-n','/bin/mkdir','-p',str(destination.parent)])
+                    upload_file(source_file,str(destination))
+                    guest(['/usr/bin/sudo','-n','/bin/chmod','644',str(destination)])
+            guest(['/usr/bin/sudo','-n','/usr/bin/xcodebuild','-importPlatform',str(staging)],timeout=900)
             save_progress('watch_runtime')
-            guest(['/usr/bin/sudo','-n','/bin/rm','-f','/private/tmp/worker-watch-runtime.dmg'])
+            guest(['/usr/bin/sudo','-n','/bin/rm','-rf',str(staging)])
         # Configure an active but disconnected interface so CFNetwork can use
         # the local CONNECT proxy. All Ethernet frames are dropped externally.
         guest(['/usr/bin/sudo','-n','/usr/sbin/networksetup','-setmanual','Ethernet','192.0.2.2','255.255.255.0','192.0.2.1'])
