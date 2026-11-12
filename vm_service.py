@@ -157,7 +157,8 @@ class Service:
         if op == 'status':
             return {'ok':True,**self.controller.status(),'lastStopReason':self.last_stop_reason}
         if op == 'usage':
-            return {'ok':True, **self.controller.status(), **usage((self.backend.home.parent,))}
+            roots = (self.backend.home, self.backend.log_root, self.backend.home.parent/'controller.log')
+            return {'ok':True, **self.controller.status(), **usage(roots)}
         lease = request.get('lease_id')
         if op == 'reserve':
             result = self.controller.reserve(lease,request.get('ttl',300))

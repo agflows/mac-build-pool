@@ -63,6 +63,7 @@ test_missing_helper_never_launches (test_native_mode.NativeRunnerTest) ... ok
 test_native_transport_still_refuses_personal_simulator (test_native_mode.NativeRunnerTest) ... ok
 test_revoked_native_policy_never_launches_or_falls_back (test_native_mode.NativeRunnerTest) ... ok
 test_worker_success_is_required_not_just_json (test_native_mode.NativeRunnerTest) ... ok
+test_broker_measurement_skips_retired_native_workspace_roots (test_owner_menu.OwnerMenuTest) ... ok
 test_local_peer_identity_comes_from_kernel (test_owner_menu.OwnerMenuTest) ... ok
 test_named_lease_and_combined_usage (test_owner_menu.OwnerMenuTest) ... ok
 test_app_selection_is_configuration_specific (test_preparation.PreparationTest) ... ok
@@ -133,6 +134,7 @@ test_start_failure_and_daemon_exit_cleanup (test_tart_lease.LeaseTest) ... ok
 test_wrong_lease_cannot_renew_or_release (test_tart_lease.LeaseTest) ... ok
 test_nonzero_graceful_stop_can_still_verify_termination (test_tart_lease.OfflineTartTest) ... ok
 test_activation_rejects_a_report_for_another_configuration (test_vm_activation.ActivationTest) ... ok
+test_installer_copies_every_protected_code_file (test_vm_activation.ActivationTest) ... ok
 test_public_job_rechecks_proof_after_submission (test_vm_activation.ActivationTest) ... ok
 test_replacing_base_requires_explicit_idle_maintenance (test_vm_activation.ActivationTest) ... ok
 test_watch_configuration_requires_watch_acceptance (test_vm_activation.ActivationTest) ... ok
@@ -163,6 +165,6 @@ test_warning_does_not_boot_until_approved (test_worker.WorkerGuardTest) ... ok
 test_worker_config_rejects_a_token (test_worker.WorkerGuardTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 163 tests in 10.358s
+Ran 165 tests in 11.888s
 
 OK

@@ -20,9 +20,18 @@ def usage(disk_paths):
     listing = subprocess.check_output(['/bin/ps', '-axo', 'uid=,rss='], text=True, timeout=5)
     resident = sum(int(rss) for line in listing.splitlines()
                    for owner, rss in [line.split()] if int(owner) == uid) * 1024
-    disk = subprocess.check_output(['/usr/bin/du', '-sk', *map(str, disk_paths)], text=True, timeout=10)
+    paths = [str(path) for path in disk_paths if path.exists()]
+    disk = subprocess.check_output(['/usr/bin/du', '-sk', *paths], text=True, timeout=10) if paths else ''
     allocated = sum(int(line.split(maxsplit=1)[0]) for line in disk.splitlines()) * 1024
     return {'memoryBytes': resident, 'diskBytes': allocated}
+
+
+def broker_disk_paths():
+    data = LIBRARY / 'data'
+    # Retired native builds can have their own private directories beneath
+    # work/tmp. Measure the installed isolated worker's actual storage roots.
+    return [*(path for path in LIBRARY.iterdir() if path.is_file()), LIBRARY / 'tart.app',
+            data / 'artifacts', data / 'spool', data / 'export', Path('/Users/iosbroker/.ios-worker')]
 
 
 def peer_uid(connection):
@@ -47,7 +56,7 @@ def snapshot(scheduler):
             'leaseId': lease.get('id') if active else None,
         }
     try:
-        meter = usage((LIBRARY, Path('/Users/iosbroker/.ios-worker')))
+        meter = usage(broker_disk_paths())
         vm = scheduler.runner._call({'op': 'usage'}, timeout=15)
         for key in ('memoryBytes', 'diskBytes'):
             status[key] = meter[key] + vm[key]

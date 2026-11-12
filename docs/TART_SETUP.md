@@ -54,7 +54,8 @@ End Session releases the entire leased guest. Quit closes the menu app.
 The local control socket accepts the configured owner's macOS UID and
 exposes status and release only. The menu holds no API tokens. Memory is
 the combined resident memory of the dedicated service accounts. Disk is
-allocated storage for the installed worker and its data. APFS shared
+allocated storage for the installed worker and its data. Retired native
+workspaces and macOS account caches are outside that measurement. APFS shared
 blocks can be counted in more than one image while a lease is active.
 
 ## Boundary
