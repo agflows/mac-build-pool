@@ -1,3 +1,5 @@
+import ctypes
+import errno
 import os
 from pathlib import Path
 import socket
@@ -8,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from broker import agent_instructions
-from owner_menu import broker_disk_paths, peer_uid, snapshot
+from owner_menu import RUsageInfoV0, broker_disk_paths, peer_uid, role_memory_footprint, snapshot
 
 
 class OwnerMenuTest(unittest.TestCase):
@@ -44,18 +46,38 @@ class OwnerMenuTest(unittest.TestCase):
 
     def test_named_lease_and_combined_usage(self):
         runner = SimpleNamespace(_call=Mock(return_value={
-            'state': 'active', 'memoryBytes': 100, 'diskBytes': 300,
+            'state': 'active', 'memoryBytes': 100, 'memoryMetric': 'footprint', 'diskBytes': 300,
         }))
         scheduler = SimpleNamespace(
             _lock=threading.Lock(), lease={'id': 'a' * 16, 'status': 'active', 'name': 'Watch QA'},
             jobs={}, running_ids=set(), runner=runner,
         )
         with patch('owner_menu.broker_disk_paths', return_value=[]), \
-             patch('owner_menu.usage', return_value={'memoryBytes': 30, 'diskBytes': 50}):
+             patch('owner_menu.usage', return_value={
+                 'memoryBytes': 30, 'memoryMetric': 'footprint', 'diskBytes': 50,
+             }):
             state = snapshot(scheduler)
         self.assertEqual(state['state'], 'In use')
         self.assertEqual(state['sessionName'], 'Watch QA')
         self.assertEqual((state['memoryBytes'], state['diskBytes']), (130, 350))
+        self.assertEqual(state['memoryMetric'], 'footprint')
+
+    def test_role_footprint_counts_same_uid_and_skips_exited_process(self):
+        def read(pid, version, buffer):
+            self.assertEqual(version, 0)
+            if pid == 12:
+                ctypes.set_errno(errno.ESRCH)
+                return -1
+            counters = ctypes.cast(buffer, ctypes.POINTER(RUsageInfoV0)).contents
+            counters.resident_size = 5
+            counters.physical_footprint = {10: 100, 11: 900}[pid]
+            return 0
+
+        libproc = SimpleNamespace(proc_pid_rusage=Mock(side_effect=read))
+        with patch('owner_menu.ctypes.CDLL', return_value=libproc), \
+             patch('owner_menu.os.geteuid', return_value=501), \
+             patch('owner_menu.subprocess.check_output', return_value='501 10\n501 11\n501 12\n502 20\n'):
+            self.assertEqual(role_memory_footprint(), 1000)
 
     def test_broker_measurement_skips_retired_native_workspace_roots(self):
         with tempfile.TemporaryDirectory() as directory:

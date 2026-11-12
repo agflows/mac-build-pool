@@ -8,6 +8,7 @@ private struct OwnerReply: Decodable {
     let leaseId: String?
     let diskBytes: Int64?
     let memoryBytes: Int64?
+    let memoryMetric: String?
     let instructions: String?
 }
 
@@ -83,7 +84,6 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item)
         }
         disk.toolTip = "Allocated storage for the installed worker. Shared clone blocks can appear in more than one image."
-        memory.toolTip = "Resident memory for the broker, VM controller, and their processes."
         menu.addItem(.separator())
         copy.target = self
         menu.addItem(copy)
@@ -108,7 +108,12 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lease = reply?.leaseId
         session.title = reply?.sessionName ?? "No active session"
         disk.title = "Disk  " + format(reply?.diskBytes, style: .file)
-        memory.title = "Memory  " + format(reply?.memoryBytes, style: .memory)
+        let showsFootprint = reply?.memoryMetric == "footprint"
+        let memoryLabel = showsFootprint ? "Memory footprint" : "Resident memory"
+        memory.title = memoryLabel + "  " + format(reply?.memoryBytes, style: .memory)
+        memory.toolTip = showsFootprint
+            ? "Combined macOS memory footprint for the broker, VM, and their helper processes."
+            : "RAM currently resident for the worker processes."
         end.isEnabled = lease != nil && !busy
         let symbol = lease == nil ? "hammer" : "hammer.fill"
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Mac Build Pool, \(status)")

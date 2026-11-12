@@ -1,5 +1,6 @@
 """Local owner UI channel. Authentication uses the connecting macOS UID."""
 import ctypes
+import errno
 import json
 import os
 from pathlib import Path
@@ -12,18 +13,54 @@ from execution_policy import require_protected_file
 from policy import PolicyError
 
 LIBRARY = Path('/Library/ios-worker')
+RUSAGE_INFO_V0 = 0
+
+
+class RUsageInfoV0(ctypes.Structure):
+    """Darwin's rusage_info_v0 from sys/resource.h."""
+    _fields_ = [
+        ('uuid', ctypes.c_ubyte * 16),
+        ('user_time', ctypes.c_uint64),
+        ('system_time', ctypes.c_uint64),
+        ('package_idle_wakeups', ctypes.c_uint64),
+        ('interrupt_wakeups', ctypes.c_uint64),
+        ('pageins', ctypes.c_uint64),
+        ('wired_size', ctypes.c_uint64),
+        ('resident_size', ctypes.c_uint64),
+        ('physical_footprint', ctypes.c_uint64),
+        ('start_time', ctypes.c_uint64),
+        ('exit_time', ctypes.c_uint64),
+    ]
+
+
+def role_memory_footprint():
+    """Use the same per-process footprint counter as Activity Monitor."""
+    read_usage = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True).proc_pid_rusage
+    read_usage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(RUsageInfoV0)]
+    read_usage.restype = ctypes.c_int
+    uid = os.geteuid()
+    listing = subprocess.check_output(['/bin/ps', '-axo', 'uid=,pid='], text=True, timeout=5)
+    total = 0
+    for line in listing.splitlines():
+        owner, pid = map(int, line.split())
+        if owner != uid:
+            continue
+        counters = RUsageInfoV0()
+        if read_usage(pid, RUSAGE_INFO_V0, ctypes.byref(counters)):
+            error = ctypes.get_errno()
+            if error == errno.ESRCH:
+                continue
+            raise OSError(error, os.strerror(error))
+        total += counters.physical_footprint
+    return total
 
 
 def usage(disk_paths):
-    """Resident memory for this role and allocated bytes for its data roots."""
-    uid = os.geteuid()
-    listing = subprocess.check_output(['/bin/ps', '-axo', 'uid=,rss='], text=True, timeout=5)
-    resident = sum(int(rss) for line in listing.splitlines()
-                   for owner, rss in [line.split()] if int(owner) == uid) * 1024
+    """Memory footprint for this role and allocated bytes for its data roots."""
     paths = [str(path) for path in disk_paths if path.exists()]
     disk = subprocess.check_output(['/usr/bin/du', '-sk', *paths], text=True, timeout=10) if paths else ''
     allocated = sum(int(line.split(maxsplit=1)[0]) for line in disk.splitlines()) * 1024
-    return {'memoryBytes': resident, 'diskBytes': allocated}
+    return {'memoryBytes': role_memory_footprint(), 'memoryMetric': 'footprint', 'diskBytes': allocated}
 
 
 def broker_disk_paths():
@@ -58,8 +95,10 @@ def snapshot(scheduler):
     try:
         meter = usage(broker_disk_paths())
         vm = scheduler.runner._call({'op': 'usage'}, timeout=15)
-        for key in ('memoryBytes', 'diskBytes'):
-            status[key] = meter[key] + vm[key]
+        status['diskBytes'] = meter['diskBytes'] + vm['diskBytes']
+        if vm.get('memoryMetric') == meter['memoryMetric']:
+            status['memoryBytes'] = meter['memoryBytes'] + vm['memoryBytes']
+            status['memoryMetric'] = meter['memoryMetric']
     except (OSError, ValueError, KeyError, RuntimeError, PolicyError, subprocess.SubprocessError):
         return status
     if vm.get('state') == 'ending':
