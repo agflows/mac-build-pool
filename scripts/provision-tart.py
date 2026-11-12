@@ -245,12 +245,6 @@ def main():
             (args.output/'guest-watch-device.txt').write_text(watch+'\n')
         guest(['/usr/bin/sudo','-n','/usr/bin/tee','/Library/ios-worker/worker.json'],data=json.dumps(cfg).encode())
         guest(['/usr/bin/sudo','-n','/bin/chmod','644','/Library/ios-worker/worker.json'])
-        for device_id in cfg['device_allowlist']:
-            simctl=['/usr/bin/sudo','-n','-u','iosagent','/usr/bin/xcrun','simctl']
-            print('Preparing the empty simulator for cold leases',flush=True)
-            guest([*simctl,'boot',device_id],timeout=180)
-            guest([*simctl,'bootstatus',device_id,'-b'],timeout=360)
-            guest([*simctl,'shutdown',device_id],timeout=180)
         versions=guest(['/usr/bin/python3','-I','-c',
             "import json,subprocess;print(json.dumps({x:subprocess.check_output(c,text=True).strip() for x,c in {'macOS':['/usr/bin/sw_vers','-productVersion'],'Xcode':['/usr/bin/xcodebuild','-version'],'Node':['/Library/ios-worker/toolchains/node/bin/node','--version'],'Bun':['/Library/ios-worker/toolchains/bun','--version'],'CocoaPods':['/opt/homebrew/bin/pod','--version'],'Ruby':['/opt/homebrew/opt/ruby/bin/ruby','--version']}.items()}))"]).decode()
         (args.output/'toolchain.json').write_text(versions)
