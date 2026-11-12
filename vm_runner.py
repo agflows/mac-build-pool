@@ -111,6 +111,8 @@ class TartRunner:
             self._call({'op':'shutdown','lease_id':self.lease,'device_id':device_id},timeout=120)
 
     def run(self, job):
+        if not self.validation_mode and not self.verified():
+            raise PolicyError('isolation_required', 'The installed VM configuration requires acceptance.')
         if job.device_id:
             check_device(job.device_id,self.allowlist,self.denylist)
         if job.kind=='ingest':

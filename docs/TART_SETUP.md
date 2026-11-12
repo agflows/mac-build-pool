@@ -67,9 +67,11 @@ native helper/sudo grant. Do not stop an occupied broker or overwrite a live
 controller. Root-owned code and image identity checks fail closed after changes.
 
 After real private acceptance, `--activate --report` checks the app/security/lease
-results, screenshot digest, installed code digest and VM configuration digest.
-Any subsequent runtime-code/config change invalidates readiness until reviewed
-and validated again. The public endpoint uses its existing Tailscale address and
+results and compares the report's screenshot, installed code and VM
+configuration digests against the actual files. Queued public jobs recheck
+acceptance immediately before execution. Any subsequent runtime-code/config
+change invalidates readiness until reviewed and validated again. The public
+endpoint uses its existing Tailscale address and
 agent credentials. Keep the owner-only operator token off remote clients.
 
 Expo supports exactly one npm or Bun lockfile and frozen dependency installation.

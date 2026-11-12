@@ -278,7 +278,8 @@ def activate(args):
     if not screenshot.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') or hashlib.sha256(screenshot.read_bytes()).hexdigest()!=report['screenshotSHA256']:
         raise SystemExit('Screenshot acceptance artifact does not match report')
     if report.get('codeSHA256')!=code_hash():raise SystemExit('Acceptance was run against different code')
-    report['vmConfigSHA256']=hashlib.sha256((LIB/'vm.json').read_bytes()).hexdigest()
+    if report.get('vmConfigSHA256')!=hashlib.sha256((LIB/'vm.json').read_bytes()).hexdigest():
+        raise SystemExit('Acceptance was run against a different VM configuration')
     root_file(LIB/'vm-validated.json',json.dumps(report,indent=2).encode()+b'\n')
     run(['/bin/launchctl','bootout','system/com.iosworker.validation'],False)
     run(['/bin/launchctl','bootstrap','system',str(install.PLIST_DST)])
