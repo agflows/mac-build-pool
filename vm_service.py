@@ -43,18 +43,20 @@ import time
 os.chdir('/private/tmp')
 simctl = ['/usr/bin/xcrun', 'simctl']
 
-def all_stopped():
-    listing = json.loads(subprocess.check_output(simctl + ['list', 'devices', '-j'], timeout=20))
+def all_stopped(timeout):
+    listing = json.loads(subprocess.check_output(simctl + ['list', 'devices', '-j'], timeout=timeout))
     return all(device['state'] == 'Shutdown'
                for devices in listing['devices'].values() for device in devices)
 
-if not all_stopped():
-    subprocess.run(simctl + ['shutdown', 'all'], check=True, timeout=30)
-    deadline = time.monotonic() + 30
-    while not all_stopped():
-        if time.monotonic() >= deadline:
-            raise SystemExit('simulators did not reach Shutdown')
-        time.sleep(0.5)
+if not all_stopped(90):
+    subprocess.run(simctl + ['shutdown', 'all'], check=True, timeout=60)
+    deadline = time.monotonic() + 60
+    while (remaining := deadline - time.monotonic()) > 0:
+        if all_stopped(remaining):
+            break
+        time.sleep(min(0.5, remaining))
+    else:
+        raise SystemExit('simulators did not reach Shutdown')
 """
 
 
@@ -137,7 +139,7 @@ class BuildTart(OfflineTart):
         command = [self.binary, 'exec', '-i', name, '/usr/bin/sudo', '-n', '-u', 'iosagent',
                    '/usr/bin/python3', '-I', '-']
         code, _, error = communicate(command, STOP_GUEST_SIMULATORS, env=self.env,
-                                     timeout=110, cap=1024 * 1024)
+                                     timeout=225, cap=1024 * 1024)
         if code:
             raise LeaseError('guest simulators failed to shut down before build: '
                              + error.decode(errors='replace')[-500:])

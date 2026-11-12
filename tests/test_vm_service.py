@@ -180,5 +180,6 @@ class GuestSimulatorShutdownTest(unittest.TestCase):
                     b'{"devices":{"phone":[{"state":"Shutdown"}],"watch":[{"state":"Shutdown"}]}}',
                 ]) as list_devices, patch.object(subprocess, 'run') as shutdown:
             exec(compile(STOP_GUEST_SIMULATORS, 'guest simulator shutdown', 'exec'), {})
-        shutdown.assert_called_once_with(['/usr/bin/xcrun', 'simctl', 'shutdown', 'all'], check=True, timeout=30)
+        shutdown.assert_called_once_with(['/usr/bin/xcrun', 'simctl', 'shutdown', 'all'], check=True, timeout=60)
+        self.assertEqual(list_devices.call_args_list[0].kwargs['timeout'], 90)
         self.assertEqual(list_devices.call_count, 3)
