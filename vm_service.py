@@ -111,8 +111,8 @@ class BuildTart(OfflineTart):
             super().stop(name)
 
     def operation(self, name, request):
-        timeout = {'prepare':2700,'build':BUILD_TIMEOUT+60,'uitest':1380,'launch':600,'boot':420,
-                   'screenshot':480,'reset':300}.get(request['op'],120)
+        timeout = {'prepare':2700,'build':BUILD_TIMEOUT+60,'uitest':1800,'launch':1140,'boot':840,
+                   'screenshot':900,'reset':360}.get(request['op'],120)
         code, stdout, stderr = communicate([self.binary,'exec','-i',name,'/usr/bin/sudo','-n','-u','iosagent',
             '/usr/bin/python3','-I','/Library/ios-worker/guest_rpc.py'],json.dumps(request).encode()+b'\n',
             env=self.env, timeout=timeout)

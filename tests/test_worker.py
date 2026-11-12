@@ -122,6 +122,7 @@ class WorkerGuardTest(unittest.TestCase):
     def test_approval_allows_boot_under_warning(self) -> None:
         ensure_booted(WORKER, True, self.cfg, self.commands, warning)
         self.assertTrue(any(argv[1:3] == ["simctl", "boot"] for argv in self.commands.calls))
+        self.assertEqual(sum(argv[1:3] == ["simctl", "list"] for argv in self.commands.calls), 1)
 
     def test_worker_config_rejects_a_token(self) -> None:
         path = Path(self.tmp.name) / "worker.json"

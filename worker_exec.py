@@ -66,6 +66,10 @@ class Commands:
                 disk_roots=self.disk_roots,
                 disk_budget=self.disk_budget,
             )
+        except TimeoutError as exc:
+            if len(argv) > 2 and argv[0] == self.xcrun and argv[1] == "simctl":
+                raise TimeoutError(f"{exc} ({argv[1]} {argv[2]})") from exc
+            raise
         except RuntimeError as exc:
             if str(exc) == "storage_limit":
                 raise PolicyError("storage_limit", "Worker storage is over the 20 GB budget.") from exc
@@ -338,7 +342,7 @@ def shutdown(request: dict, cfg, commands: Commands) -> dict:
 
 def is_booted(request: dict, cfg, commands: Commands) -> bool:
     device = _device(request, cfg)
-    completed = commands.run([commands.xcrun, "simctl", "list", "devices", "-j"], timeout=30)
+    completed = commands.run([commands.xcrun, "simctl", "list", "devices", "-j"], timeout=90)
     _check(completed, "simctl list failed")
     listing = json.loads(completed.stdout.decode("utf-8"))
     for devices in listing.get("devices", {}).values():
@@ -356,15 +360,15 @@ def ensure_booted(device: str, approved: bool, cfg, commands: Commands, memory) 
     if boot_needs_approval(None, sample, approved):
         raise PolicyError("approval_required", "Simulator boot is waiting for approval.")
     _check(commands.run([commands.xcrun, "simctl", "boot", device], timeout=180), "boot failed")
-    status = commands.run([commands.xcrun, "simctl", "bootstatus", device, "-b"], timeout=180)
-    if not is_booted(probe, cfg, commands):
+    status = commands.run([commands.xcrun, "simctl", "bootstatus", device, "-b"], timeout=300)
+    if status.returncode and not is_booted(probe, cfg, commands):
         raise CommandFailed(_tail(status) or "boot failed", int(status.returncode or 1))
     if getattr(cfg,'package_proxy',False):
         from execution_policy import require_protected_file
         certificate=Path('/Library/ios-worker/proxy-ca.pem')
         require_protected_file(certificate)
         _check(commands.run([commands.xcrun,'simctl','keychain',device,'add-root-cert',str(certificate)],
-                            timeout=30),'guest simulator relay trust setup failed')
+                            timeout=120),'guest simulator relay trust setup failed')
 
 
 def _device(request: dict, cfg) -> str:
