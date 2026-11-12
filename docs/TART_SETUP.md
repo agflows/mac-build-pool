@@ -29,6 +29,33 @@ urgent pressure stops this guest without touching personal apps or simulators.
 Builds have a 45-minute deadline, including Xcode scheme discovery. A timed-out
 command returns its bounded diagnostic output before the controller reaps its guest.
 
+## Apple Watch simulators
+
+Use the matching Apple watchOS 26.5 arm64 simulator image with
+`scripts/provision-tart.py --watch-runtime`. The image is imported inside the
+guest, and the worker Apple Watch is paired with the dedicated worker iPhone.
+The host broker exposes the logical watch device in `GET /v1/health` when the
+reviewed base contains the configured Watch.
+
+Use the watch app's shared Xcode scheme and pass its logical ID through
+`--device` on `lease --simulator`, `build`, `launch` or `test`. Preparation
+uses the Swift recipe. Screenshots and logs use the resulting session ID.
+The iPhone stays the default destination. Signing and physical-device access
+remain disabled for both platforms.
+
+## Owner menu
+
+Run `scripts/make-menu-app.sh`, then open the app it prints. It has a single
+menu bar icon with the worker state, current session name, disk and memory
+usage, End Session, and Quit. Set a name with `cli.py lease --name`.
+End Session releases the entire leased guest. Quit closes the menu app.
+
+The local control socket accepts the configured owner's macOS UID and
+exposes status and release only. The menu holds no API tokens. Memory is
+the combined resident memory of the dedicated service accounts. Disk is
+allocated storage for the installed worker and its data. APFS shared
+blocks can be counted in more than one image while a lease is active.
+
 ## Boundary
 
 Tart receives a disconnected Ethernet socket pair. The host drains every frame

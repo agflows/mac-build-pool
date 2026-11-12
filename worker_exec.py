@@ -239,7 +239,8 @@ def launch(request: dict, cfg, commands: Commands, memory) -> dict:
     revision = _revision(request, cfg)
     device = _device(request, cfg)
     derived = require_under(revision / "DerivedData", cfg.workspace_root)
-    app = _find_app(derived, require_configuration(request.get("configuration", "Debug")))
+    app = _find_app(derived, require_configuration(request.get("configuration", "Debug")),
+                    cfg.device_platforms.get(device, "iOS"))
     bundle = _bundle_id(app)
     ensure_booted(device, bool(request.get("approved")), cfg, commands, memory)
     install = commands.run([commands.xcrun, "simctl", "install", device, str(app)], timeout=180)
@@ -294,7 +295,7 @@ def uitest(request: dict, cfg, commands: Commands, memory) -> dict:
         "-scheme",
         scheme,
         "-destination",
-        f"platform=iOS Simulator,id={device},arch=arm64",
+        _destination(request, cfg),
         "-derivedDataPath",
         str(derived),
         *package_args,
@@ -376,7 +377,10 @@ def _revision(request: dict, cfg) -> Path:
 
 
 def _destination(request: dict, cfg) -> str:
-    return f"platform=iOS Simulator,id={_device(request, cfg)},arch=arm64"
+    device = _device(request, cfg)
+    platform = cfg.device_platforms.get(device, "iOS")
+    arch = ",arch=arm64" if platform == "iOS" else ""
+    return f"platform={platform} Simulator,id={device}{arch}"
 
 
 def _swift_package_args(revision: Path) -> tuple[str, ...]:
@@ -435,13 +439,18 @@ def _scheme(request: dict, project: Path, commands: Commands, package_args: tupl
     return schemes[0]
 
 
-def _find_app(derived: Path, configuration: str = "Debug") -> Path:
+def _find_app(derived: Path, configuration: str = "Debug", platform: str = "iOS") -> Path:
     products = derived / "Build" / "Products"
+    configuration = require_configuration(configuration)
+    suffix = "watchsimulator" if platform == "watchOS" else "iphonesimulator"
     apps = [
         path
-        for path in products.glob(require_configuration(configuration) + "-iphonesimulator/*.app")
+        for path in products.glob(f"{configuration}-{suffix}/*.app")
         if path.is_dir() and "UITests" not in path.name and not path.name.endswith("-Runner.app")
     ]
+    if platform == "watchOS" and not apps:
+        apps = [path for path in products.glob(f"{configuration}-iphonesimulator/*.app/Watch/*.app")
+                if path.is_dir()]
     if len(apps) != 1:
         raise PolicyError("product", "Expected one built app in DerivedData.")
     return apps[0]

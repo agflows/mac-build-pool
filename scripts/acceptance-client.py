@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0,'/Library/ios-worker')
 from cli import call,read_secret
 if os.geteuid()!=0:raise SystemExit('Owner-side private acceptance only; run through the reviewed local maintenance action')
-p=argparse.ArgumentParser();p.add_argument('archive',type=Path);p.add_argument('--recipe',required=True);p.add_argument('--scheme',required=True);p.add_argument('--configuration',default='Release');p.add_argument('--output',type=Path,required=True);p.add_argument('--public-env',type=Path);p.add_argument('--test',action='store_true');p.add_argument('--keep-lease',action='store_true');p.add_argument('--check-boundary',action='store_true');args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('archive',type=Path);p.add_argument('--recipe',required=True);p.add_argument('--scheme',required=True);p.add_argument('--configuration',default='Release');p.add_argument('--output',type=Path,required=True);p.add_argument('--public-env',type=Path);p.add_argument('--test',action='store_true');p.add_argument('--keep-lease',action='store_true');p.add_argument('--check-boundary',action='store_true');p.add_argument('--device');args=p.parse_args()
 args.output.mkdir(mode=0o700,parents=True,exist_ok=False)
 url='http://127.0.0.1:8742'
 token=read_secret(Path('/Users/iosbroker/.ios-worker/validation-token'))
@@ -42,7 +42,7 @@ def wait(job_id):
         time.sleep(2)
     raise TimeoutError('Job did not finish')
 try:
-    acquired=request('POST','/v1/leases',{})
+    acquired=request('POST','/v1/leases',{'name':args.scheme,'deviceId':args.device})
     lease=acquired['leaseId'];report['leaseId']=lease
     threading.Thread(target=renewer,daemon=True).start()
     wait(acquired['startJobId'])
@@ -71,9 +71,10 @@ try:
     base={'revisionId':uploaded['revisionId'],'leaseId':lease}
     prep=request('POST','/v1/preparations',{**base,'recipe':args.recipe,'scheme':args.scheme,'publicEnv':json.loads(args.public_env.read_text()) if args.public_env else {}})
     wait(prep['jobId'])
-    build=request('POST','/v1/builds',{**base,'scheme':args.scheme,'configuration':args.configuration,'forTesting':args.test,'bootSimulator':False})
+    target={'deviceId':args.device}
+    build=request('POST','/v1/builds',{**base,**target,'scheme':args.scheme,'configuration':args.configuration,'forTesting':args.test,'bootSimulator':False})
     wait(build['jobId'])
-    launch=request('POST','/v1/sessions',{**base,'configuration':args.configuration})
+    launch=request('POST','/v1/sessions',{**base,**target,'configuration':args.configuration})
     wait(launch['jobId']);report['sessionId']=launch['sessionId']
     time.sleep(15)
     screenshot=request('POST','/v1/sessions/'+launch['sessionId']+'/screenshot',{})
@@ -83,7 +84,7 @@ try:
     path=args.output/'simulator.png';path.write_bytes(png)
     report['screenshot']=str(path);report['screenshotSHA256']=hashlib.sha256(png).hexdigest()
     if args.test:
-        test=request('POST','/v1/tests',{**base,'scheme':args.scheme,'configuration':args.configuration});wait(test['jobId'])
+        test=request('POST','/v1/tests',{**base,**target,'scheme':args.scheme,'configuration':args.configuration});wait(test['jobId'])
     report['appBuildPassed']=True
     if args.recipe == 'expo-ios' and args.check_boundary:
         quality_script = Path(__file__).with_name('guest-check-expo.py').read_bytes()
@@ -100,6 +101,8 @@ try:
         print('App quality checks:',report['qualityChecks'],flush=True)
 finally:
     done.set()
-    if lease and not args.keep_lease:
-        request('POST','/v1/leases/'+lease+'/release',{})
-    (args.output/'results.json').write_text(json.dumps(report,indent=2)+'\n')
+    try:
+        if lease and not args.keep_lease:
+            request('POST','/v1/leases/'+lease+'/release',{})
+    finally:
+        (args.output/'results.json').write_text(json.dumps(report,indent=2)+'\n')

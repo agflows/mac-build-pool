@@ -38,13 +38,15 @@ class TartRunner:
             proof=json.loads(PROOF.read_text())
             from containment import CODE_FILES
             root=Path('/Library/ios-worker')
+            config = CONFIG.read_bytes()
             digest=hashlib.sha256()
             for name in sorted(CODE_FILES):
                 digest.update(name.encode()+b'\0'+(root/name).read_bytes())
             return (proof.get('codeSHA256')==digest.hexdigest()
-                    and proof.get('vmConfigSHA256')==hashlib.sha256(CONFIG.read_bytes()).hexdigest()
+                    and proof.get('vmConfigSHA256')==hashlib.sha256(config).hexdigest()
                     and proof.get('appBuildPassed') is True
-                    and proof.get('securityNegativesPassed') is True and proof.get('leaseExpiryPassed') is True)
+                    and proof.get('securityNegativesPassed') is True and proof.get('leaseExpiryPassed') is True
+                    and (not json.loads(config).get('watch_devices') or proof.get('watchBuildPassed') is True))
         except (OSError,ValueError,PolicyError):
             return False
 

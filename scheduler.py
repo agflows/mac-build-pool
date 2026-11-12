@@ -116,11 +116,16 @@ class Scheduler:
         self._wake.set()
         return job
 
-    def acquire_lease(self, ttl: int = 300, boot_simulator: bool = False) -> str:
+    def acquire_lease(self, ttl: int = 300, boot_simulator: bool = False, device_id: Optional[str] = None,
+                      name: Optional[str] = None) -> str:
         if type(ttl) is not int or not 1 <= ttl <= 300:
             raise PolicyError('invalid_body','Lease duration must be 1 to 300 seconds.')
         if type(boot_simulator) is not bool:
             raise PolicyError('invalid_body','bootSimulator must be a boolean.')
+        if name is not None and (not isinstance(name, str) or not 1 <= len(name.strip()) <= 80
+                                 or not name.isprintable()):
+            raise PolicyError('invalid_body', 'Session name must contain 1–80 printable characters.')
+        device = self._device(device_id)
         with self._lock:
             if self.running_ids or (self.lease and self.lease.get("status") == "active"):
                 raise PolicyError("session_busy", "Another session holds the simulator.")
@@ -129,18 +134,18 @@ class Scheduler:
             if hook:
                 hook(lease_id,ttl)
             self.lease = {"id": lease_id, "status": "active", "expires": self.clock()+ttl,
-                          "hard_deadline":self.clock()+7200}
+                          "hard_deadline":self.clock()+7200, "name":name.strip() if name else None}
             if getattr(self.runner,'vm_backend',False):
                 session_id = _new_id() if boot_simulator else None
                 job=Job(id=_new_id(),kind='boot' if boot_simulator else 'vm_start',
-                        device_id=self.default_device if boot_simulator else None,lease_id=lease_id,
+                        device_id=device if boot_simulator else None,lease_id=lease_id,
                         session_id=session_id)
                 self._put_locked(job)
                 self.lease['startJobId']=job.id
                 if session_id:
                     self.sessions[session_id] = {
                         "job_id": job.id,
-                        "device_id": self.default_device,
+                        "device_id": device,
                         "revision_id": None,
                         "lease_id": lease_id,
                     }
@@ -190,7 +195,7 @@ class Scheduler:
         return job
 
     def submit_build(self, revision_id: str, scheme: Optional[str], lease_id: str, boot_after: bool = True,
-                     configuration: str = "Debug", for_testing: bool = True) -> Job:
+                     configuration: str = "Debug", for_testing: bool = True, device_id: Optional[str] = None) -> Job:
         require_id(revision_id, "revision")
         if scheme is not None:
             require_scheme(scheme)
@@ -198,6 +203,7 @@ class Scheduler:
             raise PolicyError("invalid_body", "bootSimulator must be a boolean.")
         configuration = require_configuration(configuration)
         for_testing = require_bool(for_testing, "forTesting")
+        device = self._device(device_id)
         with self._lock:
             self._require_lease_locked(lease_id)
             job = Job(
@@ -205,7 +211,7 @@ class Scheduler:
                 kind="build",
                 revision_id=revision_id,
                 scheme=scheme,
-                device_id=self.default_device,
+                device_id=device,
                 lease_id=lease_id,
                 boot_after=boot_after,
                 configuration=configuration,

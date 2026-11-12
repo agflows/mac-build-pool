@@ -3,6 +3,7 @@ test_health_and_missing_shell_route (test_api.ApiTest) ... ok
 test_listen_address_must_be_tailscale (test_api.ApiTest) ... ok
 test_missing_and_wrong_token_are_rejected (test_api.ApiTest) ... ok
 test_missing_isolation_adapter_refuses_work_before_staging_source (test_api.ApiTest) ... ok
+test_named_watch_lease_boots_the_allowed_watch (test_api.ApiTest) ... ok
 test_native_health_does_not_claim_isolation_or_signing (test_api.ApiTest) ... ok
 test_personal_simulator_is_forbidden (test_api.ApiTest) ... ok
 test_preparation_requires_lease_and_accepts_only_named_recipe (test_api.ApiTest) ... ok
@@ -62,6 +63,8 @@ test_missing_helper_never_launches (test_native_mode.NativeRunnerTest) ... ok
 test_native_transport_still_refuses_personal_simulator (test_native_mode.NativeRunnerTest) ... ok
 test_revoked_native_policy_never_launches_or_falls_back (test_native_mode.NativeRunnerTest) ... ok
 test_worker_success_is_required_not_just_json (test_native_mode.NativeRunnerTest) ... ok
+test_local_peer_identity_comes_from_kernel (test_owner_menu.OwnerMenuTest) ... ok
+test_named_lease_and_combined_usage (test_owner_menu.OwnerMenuTest) ... ok
 test_app_selection_is_configuration_specific (test_preparation.PreparationTest) ... ok
 test_commands_pass_job_environment_and_cwd_without_shell (test_preparation.PreparationTest) ... ok
 test_dependency_installs_require_owner_opt_in (test_preparation.PreparationTest) ... ok
@@ -84,6 +87,7 @@ test_swift_build_reuses_prepared_package_checkouts (test_preparation.Preparation
 test_swift_recipe_needs_no_node_ruby_or_flutter (test_preparation.PreparationTest) ... ok
 test_toolchain_with_no_worker_write_access_is_accepted (test_preparation.PreparationTest) ... ok
 test_unknown_recipe_does_not_execute (test_preparation.PreparationTest) ... ok
+test_watch_destination_and_product_use_watch_simulator (test_preparation.PreparationTest) ... ok
 test_workspace_preferred_and_release_build_does_not_require_test_target (test_preparation.PreparationTest) ... ok
 test_writable_toolchain_is_rejected (test_preparation.PreparationTest) ... ok
 test_active_lease_blocks_idle_shutdown (test_scheduler.SchedulerTest) ... ok
@@ -140,6 +144,7 @@ test_rejected_second_lease_does_not_forget_staged_revision (test_vm_service.VMSe
 test_reported_guest_timeout_destroys_guest_and_preserves_failure (test_vm_service.VMServiceTest) ... ok
 test_status_and_reservation_do_not_start_a_vm (test_vm_service.VMServiceTest) ... ok
 test_transport_timeout_stops_guest_and_does_not_fall_back (test_vm_service.VMServiceTest) ... ok
+test_watch_only_accepts_the_public_logical_id (test_vm_service.VMServiceTest) ... ok
 test_approved_binary_tunnel_and_connect_header_order (test_vm_transport.RelayTest) ... ok
 test_disallowed_tunnel_is_forbidden (test_vm_transport.RelayTest) ... ok
 test_hung_guest_transport_is_terminated (test_vm_transport.TransportTest) ... ok
@@ -156,6 +161,6 @@ test_warning_does_not_boot_until_approved (test_worker.WorkerGuardTest) ... ok
 test_worker_config_rejects_a_token (test_worker.WorkerGuardTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 156 tests in 9.817s
+Ran 161 tests in 10.977s
 
 OK

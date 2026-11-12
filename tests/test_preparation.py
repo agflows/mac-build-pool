@@ -14,7 +14,7 @@ from unittest.mock import patch
 from config import DEVELOPER_DIR, WorkerConfig, load_worker_config
 from policy import PolicyError, require_public_env
 from tarsafe import extract_source
-from worker_exec import Commands, CommandFailed, _find_project, _find_app, build, prepare
+from worker_exec import Commands, CommandFailed, _destination, _find_project, _find_app, build, prepare
 from workspace import toolchain_paths, workspace_env, copy_flutter_sdk
 
 WORKER = "3C8BB98E-6383-446B-AF87-1E1282762A13"
@@ -200,6 +200,17 @@ class PreparationTest(unittest.TestCase):
             (derived / "Build/Products" / (configuration + "-iphonesimulator") / "CoupleJoy.app").mkdir(parents=True)
         self.assertIn("Release-iphonesimulator", str(_find_app(derived, "Release")))
         self.assertIn("Debug-iphonesimulator", str(_find_app(derived, "Debug")))
+
+    def test_watch_destination_and_product_use_watch_simulator(self):
+        self.cfg.device_platforms[WORKER] = "watchOS"
+        self.assertEqual(_destination({"device_id": WORKER}, self.cfg), f"platform=watchOS Simulator,id={WORKER}")
+        derived = self.revision / "DerivedData"
+        watch = derived / "Build/Products/Debug-watchsimulator/WatchProbe.app"
+        phone = derived / "Build/Products/Debug-iphonesimulator/Phone.app"
+        watch.mkdir(parents=True)
+        phone.mkdir(parents=True)
+        self.assertEqual(_find_app(derived, "Debug", "watchOS"), watch)
+        self.assertEqual(_find_app(derived, "Debug"), phone)
 
     def test_native_project_in_one_subdirectory_still_works(self):
         nested = self.revision / "Native/App.xcodeproj"

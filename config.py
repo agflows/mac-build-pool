@@ -32,6 +32,7 @@ class WorkerConfig:
     allow_dependency_install: bool = False
     toolchain: dict[str, str] = field(default_factory=dict)
     package_proxy: bool = False
+    device_platforms: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,6 +59,12 @@ def load_worker_config(path: Path) -> WorkerConfig:
     deny = {normalize_udid(item) for item in data.get("device_denylist", [])}
     if not allow:
         raise PolicyError("bad_config", "device_allowlist is empty.")
+    platforms = data.get("device_platforms", {})
+    if not isinstance(platforms, dict) or any(value not in ("iOS", "watchOS") for value in platforms.values()):
+        raise PolicyError("bad_config", "Invalid simulator platform mapping.")
+    platforms = {normalize_udid(device): value for device, value in platforms.items()}
+    if not platforms.keys() <= allow:
+        raise PolicyError("bad_config", "Only allowed simulators can have a platform mapping.")
     enabled = data.get("allow_dependency_install", False)
     toolchain = data.get("toolchain", {})
     if not isinstance(enabled, bool) or not isinstance(toolchain, dict) or not isinstance(data.get("package_proxy", False), bool):
@@ -78,6 +85,7 @@ def load_worker_config(path: Path) -> WorkerConfig:
         allow_dependency_install=enabled,
         toolchain=toolchain,
         package_proxy=data.get("package_proxy", False),
+        device_platforms=platforms,
     )
 
 

@@ -29,6 +29,7 @@ from memory import sample_system
 from isolated_runner import IsolatedRunner
 from execution_policy import execution_mode, NATIVE, require_native_config
 from native_runner import NativeUserRunner
+from policy import PolicyError
 from vm_runner import TartRunner, CONFIG as VM_CONFIG
 from scheduler import Scheduler
 
@@ -165,6 +166,12 @@ def main(argv: list[str]) -> int:
     cfg = load_broker_config(config_path)
     host = listen_host(cfg)
     app, scheduler = make_app(cfg)
+    if getattr(scheduler.runner, 'vm_backend', False):
+        from owner_menu import start as start_owner_menu
+        try:
+            start_owner_menu(scheduler, validation=scheduler.runner.validation_mode)
+        except (OSError, ValueError, KeyError, PolicyError) as exc:
+            sys.stderr.write(f"Owner menu unavailable: {type(exc).__name__}\n")
     stop = threading.Event()
     threading.Thread(target=scheduler.run_forever, args=(stop,), daemon=True).start()
     httpd = serve(app, host, cfg.listen_port)

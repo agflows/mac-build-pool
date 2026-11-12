@@ -111,6 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("health")
     lease=sub.add_parser("lease")
     lease.add_argument('--simulator',action='store_true')
+    lease.add_argument('--device',help='Worker simulator ID')
+    lease.add_argument('--name',help='Name shown in the Mac menu')
     renew=sub.add_parser('renew')
     renew.add_argument('lease')
     release = sub.add_parser("release")
@@ -121,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--revision", required=True)
     build.add_argument("--lease", required=True)
     build.add_argument("--scheme")
+    build.add_argument("--device", help="Worker simulator ID")
     build.add_argument("--no-boot", action="store_true")
     build.add_argument("--configuration", choices=["Debug", "Release"], default="Debug")
     build.add_argument("--build-only", action="store_true", help="Use build rather than build-for-testing (apps without XCTest targets).")
@@ -133,11 +136,13 @@ def build_parser() -> argparse.ArgumentParser:
     launch = sub.add_parser("launch")
     launch.add_argument("--revision", required=True)
     launch.add_argument("--lease", required=True)
+    launch.add_argument("--device", help="Worker simulator ID")
     launch.add_argument("--configuration", choices=["Debug", "Release"], default="Debug")
     test = sub.add_parser("test")
     test.add_argument("--revision", required=True)
     test.add_argument("--lease", required=True)
     test.add_argument("--scheme")
+    test.add_argument("--device", help="Worker simulator ID")
     test.add_argument("--configuration", choices=["Debug", "Release"], default="Debug")
     shot = sub.add_parser("screenshot")
     shot.add_argument("session")
@@ -163,7 +168,8 @@ def main(argv: list[str]) -> int:
     if args.command == "health":
         status, raw = call(args.url, token, "GET", "/v1/health")
     elif args.command == "lease":
-        status, raw = call(args.url, token, "POST", "/v1/leases", json.dumps({'bootSimulator':args.simulator}).encode())
+        body = {'bootSimulator': args.simulator, 'deviceId': args.device, 'name': args.name}
+        status, raw = call(args.url, token, "POST", "/v1/leases", json.dumps(body).encode())
     elif args.command == "release":
         status, raw = call(args.url, token, "POST", f"/v1/leases/{args.lease}/release", b"{}")
     elif args.command == 'renew':
@@ -190,7 +196,7 @@ def main(argv: list[str]) -> int:
         return 0 if job.get("status") == "succeeded" else 1
     elif args.command == "build":
         body = {"revisionId": args.revision, "leaseId": args.lease, "bootSimulator": not args.no_boot,
-                "configuration": args.configuration, "forTesting": not args.build_only}
+                "configuration": args.configuration, "forTesting": not args.build_only, "deviceId": args.device}
         if args.scheme:
             body["scheme"] = args.scheme
         status, raw = call(args.url, token, "POST", "/v1/builds", json.dumps(body).encode())
@@ -200,7 +206,8 @@ def main(argv: list[str]) -> int:
         job = wait_job(args.url, token, payload["jobId"])
         return 0 if job.get("status") == "succeeded" else 1
     elif args.command in {"launch", "test"}:
-        body = {"revisionId": args.revision, "leaseId": args.lease, "configuration": args.configuration}
+        body = {"revisionId": args.revision, "leaseId": args.lease, "configuration": args.configuration,
+                "deviceId": args.device}
         if args.command == "test" and args.scheme:
             body["scheme"] = args.scheme
         route = "/v1/sessions" if args.command == "launch" else "/v1/tests"

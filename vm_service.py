@@ -24,6 +24,7 @@ from containment import BUILD_TIMEOUT
 from egress_policy import PACKAGE_HOSTS
 from execution_policy import require_protected_file
 from host_egress import Relay
+from owner_menu import usage
 from policy import require_id, check_device, PolicyError
 from tart_lease import OfflineTart, LeaseController, LeaseError
 from vm_transport import communicate, read_frame
@@ -127,13 +128,17 @@ class BuildTart(OfflineTart):
 
 
 class Service:
-    def __init__(self, backend, *, logical_device, guest_device):
-        check_device(logical_device,{logical_device},{PERSONAL})
-        check_device(guest_device,{guest_device},{PERSONAL})
+    def __init__(self, backend, *, logical_device, guest_device, watch_devices=None):
+        mapping = {logical_device: guest_device}
+        if watch_devices is not None:
+            watch_logical, watch_guest = watch_devices
+            if watch_logical == logical_device or watch_guest == guest_device:
+                raise LeaseError('iPhone and Watch mappings must be distinct')
+            mapping[watch_logical] = watch_guest
+        self.devices = {check_device(key,{key},{PERSONAL}):check_device(value,{value},{PERSONAL})
+                        for key,value in mapping.items()}
         self.backend = backend
         self.controller = LeaseController(backend,max_ttl=300,max_lifetime=7200)
-        self.logical_device = logical_device
-        self.guest_device = guest_device
         self.job_lock = threading.Lock()
         self.loaded = set()
         self.last_stop_reason=None
@@ -149,6 +154,8 @@ class Service:
                     'filesystem':'no-host-shares','signing':False,'usb':False}
         if op == 'status':
             return {'ok':True,**self.controller.status(),'lastStopReason':self.last_stop_reason}
+        if op == 'usage':
+            return {'ok':True, **self.controller.status(), **usage((self.backend.home.parent,))}
         lease = request.get('lease_id')
         if op == 'reserve':
             result = self.controller.reserve(lease,request.get('ttl',300))
@@ -167,7 +174,7 @@ class Service:
         if op not in ALLOWED_OPS:
             raise LeaseError('unsupported operation')
         if request.get('device_id'):
-            check_device(request['device_id'],{self.logical_device},{PERSONAL})
+            check_device(request['device_id'],self.devices.keys(),{PERSONAL})
         with self.job_lock:
             if op in {'booted','shutdown'} and self.controller.status()['state']!='active':
                 return {'ok':True,'booted':False} if op=='booted' else {'ok':True,'log':'simulator is off'}
@@ -181,7 +188,7 @@ class Service:
             payload.pop('lease_id',None)
             payload.pop('ttl',None)
             if payload.get('device_id'):
-                payload['device_id'] = self.guest_device
+                payload['device_id'] = self.devices[check_device(payload['device_id'],self.devices.keys(),{PERSONAL})]
             source = payload.get('source_base64')
             revision = payload.get('revision_id')
             if revision and op in {'prepare','build','launch','uitest'}:
@@ -307,7 +314,8 @@ def main():
     backend=BuildTart(Path(cfg['tart']),Path(cfg['home']),cfg['base'],Path(cfg['logs']),
                       cfg.get('memory_mb',6144),allowed=frozenset(cfg.get('allowed_hosts',PACKAGE_HOSTS)),
                       base_identity=cfg.get('base_identity'))
-    service=Service(backend,logical_device=cfg['logical_device'],guest_device=cfg['guest_device'])
+    service=Service(backend,logical_device=cfg['logical_device'],guest_device=cfg['guest_device'],
+                    watch_devices=cfg.get('watch_devices'))
     stop=threading.Event()
     for sig in (signal.SIGTERM,signal.SIGINT):
         signal.signal(sig,lambda *_:stop.set())

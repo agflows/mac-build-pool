@@ -51,6 +51,18 @@ class VMServiceTest(unittest.TestCase):
         self.assertNotIn('source_base64',self.backend.operation.call_args.args[1])
         self.backend.start.assert_called_once()
 
+    def test_watch_only_accepts_the_public_logical_id(self):
+        watch = 'A23FD418-22F2-4BA4-9E87-91E86A9D3F09'
+        guest_watch = 'E1111111-2222-3333-4444-555555555555'
+        self.service = Service(self.backend, logical_device=WORKER, guest_device=GUEST,
+                               watch_devices=(watch, guest_watch))
+        self.reserve()
+        with self.assertRaises(PolicyError):
+            self.service.dispatch({'op': 'boot', 'lease_id': LEASE, 'device_id': guest_watch})
+        self.backend.start.assert_not_called()
+        self.service.dispatch({'op': 'boot', 'lease_id': LEASE, 'device_id': watch})
+        self.assertEqual(self.backend.operation.call_args.args[1]['device_id'], guest_watch)
+
     def test_expiry_destroys_the_whole_guest_without_renewal(self):
         self.reserve()
         self.service.dispatch({'op':'boot','lease_id':LEASE,'device_id':WORKER})

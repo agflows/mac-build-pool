@@ -146,19 +146,23 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         installed = getattr(scheduler.runner, "installed", lambda: False)()
         mode = getattr(scheduler.runner, "execution_mode", "isolated-only")
         vm_backend=getattr(scheduler.runner,'vm_backend',False)
+        platforms=getattr(getattr(scheduler.runner,'worker',None),'device_platforms',{})
         lease=scheduler.lease or {}
         return 200, {"ok": True, "executionMode": mode, "executorInstalled": installed,
                      "securityBoundary": "unix-account" if mode == "native-user" else ('macOS-vm' if vm_backend else "external-vm-controller-required"),
                      "networkIsolationVerified": bool(vm_backend and installed and scheduler.runner.verified()),
                      "leaseActive":lease.get('status')=='active',
                      "leaseExpiresIn":max(0,lease.get('expires',0)-scheduler.clock()),
+                     "simulators":[{"deviceId":device,"platform":platforms.get(device,"iOS")}
+                                   for device in sorted(scheduler.allowlist)],
                      "signingAPIEnabled": False, "usbAPIEnabled": False,
                      "pressure": scheduler.pressure_name(), **counts}, JSON
     if method == "POST" and segments == ["v1", "sources"]:
         return accept_source(app, body, content_type)
     if method == "POST" and segments == ["v1", "leases"]:
         data=read_json(body)
-        lease_id=scheduler.acquire_lease(data.get('ttl',300),data.get('bootSimulator',False))
+        lease_id=scheduler.acquire_lease(data.get('ttl',300),data.get('bootSimulator',False),
+                                         guard_device(scheduler, data),data.get('name'))
         lease=scheduler.lease
         metadata={key:lease[key] for key in ('startJobId','sessionId') if key in lease}
         return 201, {"leaseId":lease_id,"expiresIn":data.get('ttl',300),**metadata}, JSON
@@ -184,6 +188,7 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
             boot_after(data),
             require_configuration(data.get("configuration", "Debug")),
             require_bool(data.get("forTesting", True), "forTesting"),
+            guard_device(scheduler, data),
         )
         return 202, job_view(job), JSON
     if method == "POST" and segments == ["v1", "sessions"]:

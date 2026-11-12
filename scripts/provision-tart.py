@@ -32,6 +32,7 @@ def main():
     p.add_argument('--node',type=Path,required=True)
     p.add_argument('--bun',type=Path,required=True)
     p.add_argument('--runtime',type=Path,required=True)
+    p.add_argument('--watch-runtime',type=Path,help='Apple watchOS 26.5 arm64 simulator runtime disk image')
     p.add_argument('--flutter',type=Path,help='Verified official arm64 Flutter SDK archive')
     p.add_argument('--keep-failed',action='store_true',help='Keep only a stopped trusted provisioning guest for diagnosis/resume')
     p.add_argument('--resume',help='Resume the last trusted provisioning guest; never accepts a project lease guest')
@@ -213,6 +214,13 @@ def main():
             guest(['/usr/bin/sudo','-n','/usr/bin/xcrun','simctl','runtime','add','/private/tmp/worker-ios-runtime.dmg','--move'],timeout=900)
             save_progress('runtime')
             guest(['/usr/bin/sudo','-n','/bin/rm','-f','/private/tmp/worker-ios-runtime.dmg'])
+        if args.watch_runtime and not progress.get('watch_runtime'):
+            print('Importing the Apple watchOS simulator runtime',flush=True)
+            upload_file(args.watch_runtime,'/private/tmp/worker-watch-runtime.dmg')
+            guest(['/usr/bin/sudo','-n','/bin/chmod','644','/private/tmp/worker-watch-runtime.dmg'])
+            guest(['/usr/bin/sudo','-n','/usr/bin/xcrun','simctl','runtime','add','/private/tmp/worker-watch-runtime.dmg','--move'],timeout=900)
+            save_progress('watch_runtime')
+            guest(['/usr/bin/sudo','-n','/bin/rm','-f','/private/tmp/worker-watch-runtime.dmg'])
         # Configure an active but disconnected interface so CFNetwork can use
         # the local CONNECT proxy. All Ethernet frames are dropped externally.
         guest(['/usr/bin/sudo','-n','/usr/sbin/networksetup','-setmanual','Ethernet','192.0.2.2','255.255.255.0','192.0.2.1'])
@@ -220,6 +228,12 @@ def main():
         device=guest(['/usr/bin/sudo','-n','-u','iosagent','/usr/bin/python3','-I','-c',
             "import os;os.chdir('/private/tmp');import json,subprocess;d=json.loads(subprocess.check_output(['/usr/bin/xcrun','simctl','list','-j']));r=next(x['identifier'] for x in d['runtimes'] if x.get('isAvailable') and x['name'].startswith('iOS'));t=next(x['identifier'] for x in d['devicetypes'] if x['name'].startswith('iPhone'));print(subprocess.check_output(['/usr/bin/xcrun','simctl','create','Worker iPhone',t,r],text=True).strip())"]).decode().strip()
         cfg['device_allowlist']=[device]
+        if args.watch_runtime:
+            watch=guest(['/usr/bin/sudo','-n','-u','iosagent','/usr/bin/python3','-I','-',device],
+                        data=(source/'scripts/guest-provision-watch.py').read_bytes(),timeout=180).decode().strip()
+            cfg['device_allowlist'].append(watch)
+            cfg['device_platforms']={watch:'watchOS'}
+            (args.output/'guest-watch-device.txt').write_text(watch+'\n')
         guest(['/usr/bin/sudo','-n','/usr/bin/tee','/Library/ios-worker/worker.json'],data=json.dumps(cfg).encode())
         guest(['/usr/bin/sudo','-n','/bin/chmod','644','/Library/ios-worker/worker.json'])
         versions=guest(['/usr/bin/python3','-I','-c',

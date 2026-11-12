@@ -139,6 +139,16 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self._request("POST", f'/v1/leases/{lease["leaseId"]}/release', b"{}")[0], 200)
         self.assertEqual(self._request("POST", screenshot, b"{}")[0], 409)
 
+    def test_named_watch_lease_boots_the_allowed_watch(self) -> None:
+        watch = "A23FD418-22F2-4BA4-9E87-91E86A9D3F09"
+        self.scheduler.allowlist.add(watch)
+        self.runner.vm_backend = True
+        body = json.dumps({"name": "Watch QA", "deviceId": watch, "bootSimulator": True}).encode()
+        status, raw = self._request("POST", "/v1/leases", body)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.scheduler.lease["name"], "Watch QA")
+        self.assertEqual(self.scheduler.get(json.loads(raw)["startJobId"]).device_id, watch)
+
     def test_third_build_returns_queue_full(self) -> None:
         body = json.dumps({"revisionId": "rev0001", "leaseId": self._lease()}).encode()
         self.assertEqual(self._request("POST", "/v1/builds", body)[0], 202)

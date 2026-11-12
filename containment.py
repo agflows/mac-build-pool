@@ -40,6 +40,7 @@ CODE_FILES = (
     "vm_service.py",
     "vm_runner.py",
     "vm_launch.py",
+    "owner_menu.py",
     "audit.py",
     "policy.py",
     "config.py",

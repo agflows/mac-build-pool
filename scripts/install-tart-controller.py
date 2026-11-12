@@ -249,6 +249,17 @@ def stage(args):
          'socket':str(control/'vm.sock'),'logs':str(VMHOME/'logs'),'memory_mb':args.memory_mib,
          'logical_device':install.WORKER_DEVICE,'guest_device':(runtime/'provisioning/guest-device.txt').read_text().strip(),
          'allowed_hosts':sorted(PACKAGE_HOSTS|{backend.hostname})}
+    watch_evidence=runtime/'provisioning/guest-watch-device.txt'
+    worker_path=LIB/'worker.json'
+    worker=json.loads(worker_path.read_text())
+    worker['device_allowlist']=[install.WORKER_DEVICE]
+    worker['device_platforms']={}
+    if watch_evidence.is_file():
+        from policy import normalize_udid
+        cfg['watch_devices']=[install.WATCH_DEVICE,normalize_udid(watch_evidence.read_text().strip())]
+        worker['device_allowlist'].append(install.WATCH_DEVICE)
+        worker['device_platforms'][install.WATCH_DEVICE]='watchOS'
+    root_file(worker_path,json.dumps(worker,indent=2).encode()+b'\n')
     disk=target/'disk.img'
     cfg['base_identity']={'size':disk.stat().st_size,'mtimeNs':disk.stat().st_mtime_ns,
                           'configSHA256':hashlib.sha256((target/'config.json').read_bytes()).hexdigest(),
@@ -285,6 +296,16 @@ def stage(args):
     # Private validation credentials never replace the existing agent credentials.
     private_token=BROKER/'validation-token';private_operator=BROKER/'validation-operator-token'
     broker_uid=pwd.getpwnam('iosbroker').pw_uid
+    owner_uid=runtime.stat().st_uid
+    if owner_uid in (0,uid,broker_uid):
+        raise SystemExit('The trial directory must belong to the local Mac owner')
+    owner_socket_dir=LIB/'owner'
+    if owner_socket_dir.is_symlink():
+        raise SystemExit('Unexpected owner socket directory symlink')
+    owner_socket_dir.mkdir(mode=0o755,exist_ok=True)
+    os.chown(owner_socket_dir,broker_uid,20)
+    owner_socket_dir.chmod(0o755)
+    root_file(LIB/'owner.json',json.dumps({'uid':owner_uid}).encode()+b'\n')
     for path in (private_token,private_operator):
         root_file(path,(secrets.token_hex(32)+'\n').encode(),0o600);os.chown(path,broker_uid,20)
     validation={'worker_config':str(LIB/'worker.json'),'listen_host':'127.0.0.1','listen_port':8742,
@@ -312,8 +333,15 @@ def activate(args):
     if not screenshot.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') or hashlib.sha256(screenshot.read_bytes()).hexdigest()!=report['screenshotSHA256']:
         raise SystemExit('Screenshot acceptance artifact does not match report')
     if report.get('codeSHA256')!=code_hash():raise SystemExit('Acceptance was run against different code')
-    if report.get('vmConfigSHA256')!=hashlib.sha256((LIB/'vm.json').read_bytes()).hexdigest():
+    config = (LIB/'vm.json').read_bytes()
+    if report.get('vmConfigSHA256')!=hashlib.sha256(config).hexdigest():
         raise SystemExit('Acceptance was run against a different VM configuration')
+    if json.loads(config).get('watch_devices'):
+        if report.get('watchBuildPassed') is not True:
+            raise SystemExit('A configured Watch requires successful watchOS acceptance')
+        watch = Path(report['watchScreenshot']).read_bytes()
+        if not watch.startswith(b'\x89PNG\r\n\x1a\n') or hashlib.sha256(watch).hexdigest()!=report['watchScreenshotSHA256']:
+            raise SystemExit('Watch screenshot acceptance artifact does not match report')
     root_file(LIB/'vm-validated.json',json.dumps(report,indent=2).encode()+b'\n')
     run(['/bin/launchctl','bootout','system/com.iosworker.validation'],False)
     run(['/bin/launchctl','bootstrap','system',str(install.PLIST_DST)])

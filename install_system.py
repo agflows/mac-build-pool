@@ -24,6 +24,7 @@ BROKER_DIR = BROKER_HOME / ".ios-worker"
 PLIST_DST = Path("/Library/LaunchDaemons/com.iosworker.broker.plist")
 SUDOERS_DST = Path("/etc/sudoers.d/ios-worker")
 WORKER_DEVICE = "3C8BB98E-6383-446B-AF87-1E1282762A13"
+WATCH_DEVICE = "A23FD418-22F2-4BA4-9E87-91E86A9D3F09"
 PERSONAL_DEVICE = "4D015300-4BAE-4E6D-89C9-BC4D454E4216"
 CODE = (
     "tart_lease.py",

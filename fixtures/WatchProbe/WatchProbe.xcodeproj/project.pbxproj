@@ -1,0 +1,62 @@
+// !$*UTF8*$!
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 56;
+    objects = {
+        100000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchProbe.swift; sourceTree = "<group>"; };
+        100000000000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.application; path = WatchProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        100000000000000000000003 = {isa = PBXBuildFile; fileRef = 100000000000000000000001; };
+        100000000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000003); runOnlyForDeploymentPostprocessing = 0; };
+        100000000000000000000005 = {isa = PBXGroup; children = (100000000000000000000001, 100000000000000000000006); sourceTree = "<group>"; };
+        100000000000000000000006 = {isa = PBXGroup; children = (100000000000000000000002); name = Products; sourceTree = "<group>"; };
+        100000000000000000000007 = {
+            isa = XCBuildConfiguration;
+            name = Debug;
+            buildSettings = {
+                SDKROOT = watchos;
+                SUPPORTED_PLATFORMS = "watchos watchsimulator";
+                SWIFT_VERSION = 6.0;
+                TARGETED_DEVICE_FAMILY = 4;
+                WATCHOS_DEPLOYMENT_TARGET = 10.0;
+            };
+        };
+        100000000000000000000008 = {
+            isa = XCBuildConfiguration;
+            name = Debug;
+            buildSettings = {
+                GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_KEY_WKApplication = YES;
+                INFOPLIST_KEY_WKWatchOnly = YES;
+                PRODUCT_BUNDLE_IDENTIFIER = org.agflows.WatchProbe;
+                PRODUCT_NAME = WatchProbe;
+            };
+        };
+        100000000000000000000009 = {isa = XCConfigurationList; buildConfigurations = (100000000000000000000007); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        10000000000000000000000A = {isa = XCConfigurationList; buildConfigurations = (100000000000000000000008); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        10000000000000000000000B = {
+            isa = PBXNativeTarget;
+            name = WatchProbe;
+            productName = WatchProbe;
+            productReference = 100000000000000000000002;
+            productType = "com.apple.product-type.application";
+            buildConfigurationList = 10000000000000000000000A;
+            buildPhases = (100000000000000000000004);
+            buildRules = ();
+            dependencies = ();
+        };
+        10000000000000000000000C = {
+            isa = PBXProject;
+            buildConfigurationList = 100000000000000000000009;
+            compatibilityVersion = "Xcode 14.0";
+            developmentRegion = en;
+            knownRegions = (en, Base);
+            mainGroup = 100000000000000000000005;
+            productRefGroup = 100000000000000000000006;
+            projectDirPath = "";
+            projectRoot = "";
+            targets = (10000000000000000000000B);
+        };
+    };
+    rootObject = 10000000000000000000000C;
+}
