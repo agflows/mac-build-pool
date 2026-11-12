@@ -187,6 +187,10 @@ def main():
                 guest(['/usr/bin/sudo','-n','/bin/rm','/private/tmp/worker-flutter.zip'])
                 guest(['/usr/bin/sudo','-n','/usr/sbin/chown','-R','root:wheel','/Library/ios-worker/toolchains/flutter'])
                 save_progress('flutter')
+            # The SDK includes cached assets with owner-only archive modes.
+            # The worker must be able to read them into its private SDK copy.
+            guest(['/usr/bin/sudo','-n','/usr/bin/find','-P','/Library/ios-worker/toolchains/flutter',
+                   '!','-type','l','-exec','/bin/chmod','a+rX,go-w','{}','+'],timeout=180)
         print('Starting allowlisted package relay over guest control channel',flush=True)
         relay_process=subprocess.Popen([backend.binary,'exec','-i',vm,'/usr/bin/sudo','-n',
              '/usr/bin/python3','-I','/Library/ios-worker/guest_proxy.py'],env=backend.env,cwd='/private/tmp',

@@ -23,16 +23,31 @@ def run(argv):
 run([flutter,'create','--platforms','ios','--org','org.agflows','--project-name','flutter_probe','--empty',str(project)])
 pubspec=project/'pubspec.yaml'
 pubspec.write_text(pubspec.read_text().replace('dependencies:\n','dependencies:\n  shared_preferences: 2.5.6\n',1))
-(project/'lib/main.dart').write_text('''import 'package:flutter/material.dart';
+(project/'lib/main.dart').write_text('''import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final preferences = await SharedPreferences.getInstance();
   await preferences.setString('fixture', 'local plugin works');
-  runApp(MaterialApp(home: Scaffold(body: Center(child: Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [const Text('Flutter isolated build'), Text(preferences.getString('fixture')!)]
-  )))));
+  runApp(Directionality(
+    textDirection: TextDirection.ltr,
+    child: ColoredBox(
+      color: const Color(0xFFFFFFFF),
+      child: Center(
+        child: DefaultTextStyle(
+          style: const TextStyle(color: Color(0xFF222222), fontSize: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Flutter isolated build'),
+              Text(preferences.getString('fixture')!),
+            ],
+          ),
+        ),
+      ),
+    ),
+  ));
 }
 ''')
 run([flutter,'pub','get'])
