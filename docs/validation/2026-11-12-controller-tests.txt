@@ -129,6 +129,7 @@ test_wrong_lease_cannot_renew_or_release (test_tart_lease.LeaseTest) ... ok
 test_nonzero_graceful_stop_can_still_verify_termination (test_tart_lease.OfflineTartTest) ... ok
 test_activation_rejects_a_report_for_another_configuration (test_vm_activation.ActivationTest) ... ok
 test_public_job_rechecks_proof_after_submission (test_vm_activation.ActivationTest) ... ok
+test_replacing_base_requires_explicit_idle_maintenance (test_vm_activation.ActivationTest) ... ok
 test_expiry_destroys_the_whole_guest_without_renewal (test_vm_service.VMServiceTest) ... ok
 test_idle_simulator_queries_and_shutdown_never_start_guest (test_vm_service.VMServiceTest) ... ok
 test_lease_device_mapping_and_one_ingest_per_revision (test_vm_service.VMServiceTest) ... ok
@@ -154,6 +155,6 @@ test_warning_does_not_boot_until_approved (test_worker.WorkerGuardTest) ... ok
 test_worker_config_rejects_a_token (test_worker.WorkerGuardTest) ... ok
 
 ----------------------------------------------------------------------
-Ran 154 tests in 8.614s
+Ran 155 tests in 8.695s
 
 OK

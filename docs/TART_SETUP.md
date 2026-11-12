@@ -65,6 +65,8 @@ localhost validation broker with temporary credentials while public execution
 is off. It preserves the existing public token files and removes the legacy
 native helper/sudo grant. Do not stop an occupied broker or overwrite a live
 controller. Root-owned code and image identity checks fail closed after changes.
+When a reviewed, project-free image supersedes the installed base, use
+`--replace-base` while the controller is idle and its lease guests are gone.
 
 After real private acceptance, `--activate --report` checks the app/security/lease
 results and compares the report's screenshot, installed code and VM

@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -13,11 +14,14 @@ from vm_runner import TartRunner
 
 
 class ActivationTest(unittest.TestCase):
-    def test_activation_rejects_a_report_for_another_configuration(self):
+    def setUp(self):
         script = Path(__file__).resolve().parents[1] / 'scripts/install-tart-controller.py'
         spec = importlib.util.spec_from_file_location('install_tart_controller', script)
-        installer = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(installer)
+        self.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.installer)
+
+    def test_activation_rejects_a_report_for_another_configuration(self):
+        installer = self.installer
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'vm.json').write_text('{"memory_mb":4096}')
@@ -38,6 +42,33 @@ class ActivationTest(unittest.TestCase):
                     installer.activate(SimpleNamespace(report=report))
                 root_file.assert_not_called()
                 run.assert_not_called()
+
+    def test_replacing_base_requires_explicit_idle_maintenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            new = root / 'reviewed'
+            target = root / 'vms/worker-base'
+            for path, disk in ((new, b'new image'), (target, b'old')):
+                path.mkdir(parents=True)
+                (path / 'disk.img').write_bytes(disk)
+                (path / 'config.json').write_text('{}')
+            with self.assertRaisesRegex(SystemExit, 'review it'):
+                self.installer.install_base(new, target, replace=False)
+            lease = target.parent / 'lease-0123456789abcdef'
+            lease.mkdir()
+            with self.assertRaisesRegex(SystemExit, 'remaining lease'):
+                self.installer.install_base(new, target, replace=True)
+            lease.rmdir()
+
+            def command(argv, check=True):
+                if argv[0] == '/bin/cp':
+                    shutil.copytree(argv[-2], argv[-1])
+                return SimpleNamespace(returncode=int(argv[0] == '/bin/launchctl'))
+
+            with patch.object(self.installer, 'run', side_effect=command):
+                self.installer.install_base(new, target, replace=True)
+            self.assertEqual((target / 'disk.img').read_bytes(), b'new image')
+            self.assertEqual(list(target.parent.iterdir()), [target])
 
     def test_public_job_rechecks_proof_after_submission(self):
         runner = TartRunner(set(), set(), None)

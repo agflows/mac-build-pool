@@ -125,10 +125,51 @@ def launch(plist,label,data):
     run(['/bin/launchctl','enable','system/'+label],False)
 
 
+def install_base(base, target, *, replace):
+    if target.is_symlink():
+        raise SystemExit('Unexpected controller base symlink')
+    if not target.exists():
+        run(['/bin/cp','-cRp',str(base),str(target)])
+        return
+    if any(path.is_symlink() or not path.is_file()
+           for path in (target/'disk.img',target/'config.json')):
+        raise SystemExit('Existing controller base is incomplete or unsafe')
+    if ((target/'disk.img').stat().st_size==(base/'disk.img').stat().st_size
+            and (target/'disk.img').stat().st_mtime_ns==(base/'disk.img').stat().st_mtime_ns
+            and (target/'config.json').read_bytes()==(base/'config.json').read_bytes()):
+        return
+    if not replace:
+        raise SystemExit('Existing base differs from the pristine image; review it before using --replace-base')
+    if any(target.parent.glob('lease-*')) or run(
+            ['/bin/launchctl','print','system/com.iosworker.vmcontroller'],False).returncode==0:
+        raise SystemExit('Stop the idle controller and resolve any remaining lease guests before replacing its base')
+    staging=Path(tempfile.mkdtemp(prefix='.base-stage-',dir=target.parent))
+    candidate=staging/'candidate'
+    previous=staging/'previous'
+    promoted=False
+    try:
+        run(['/bin/cp','-cRp',str(base),str(candidate)])
+        target.rename(previous)
+        try:
+            candidate.rename(target)
+            promoted=True
+        except OSError:
+            try:
+                previous.rename(target)
+            except OSError as exc:
+                raise SystemExit(f'Base rollback needs maintenance. The previous base is at {previous}') from exc
+            raise
+    finally:
+        if promoted or not previous.exists():
+            shutil.rmtree(staging)
+
+
 def stage(args):
     runtime=args.trial_root
     base=runtime/'state/vms/worker-base'
-    if not (base/'disk.img').is_file():raise SystemExit('Provision the powered-off reviewed worker-base first')
+    if (base.is_symlink() or any(path.is_symlink() or not path.is_file()
+                                for path in (base/'disk.img',base/'config.json'))):
+        raise SystemExit('Provision the powered-off reviewed worker-base first')
     if not HOST_PYTHON.is_file() or not os.access(HOST_PYTHON,os.X_OK):
         raise SystemExit('The approved Xcode Python interpreter is missing')
     if not (runtime/'provisioning/guest-device.txt').is_file():raise SystemExit('Missing guest simulator provision evidence')
@@ -192,14 +233,7 @@ def stage(args):
     tart_home=VMHOME/'.tart'
     target=tart_home/'vms/worker-base'
     target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
-    if target.is_symlink():raise SystemExit('Unexpected controller base symlink')
-    if target.exists():
-        if ((target/'disk.img').stat().st_size!=(base/'disk.img').stat().st_size
-                or (target/'disk.img').stat().st_mtime_ns!=(base/'disk.img').stat().st_mtime_ns
-                or (target/'config.json').read_bytes()!=(base/'config.json').read_bytes()):
-            raise SystemExit('Existing base differs from the pristine image; review partial installation before retrying')
-    else:
-        run(['/bin/cp','-cRp',str(base),str(target)])
+    install_base(base,target,replace=args.replace_base)
     for directory,dirs,files in os.walk(tart_home,followlinks=False):
         os.chown(directory,uid,20)
         for name in files:os.chown(Path(directory)/name,uid,20,follow_symlinks=False)
@@ -293,6 +327,7 @@ def main():
     parser.add_argument('--trial-root',type=Path,required=True)
     parser.add_argument('--public-env',type=Path,required=True)
     parser.add_argument('--memory-mib',type=int,choices=(4096,6144,8192),default=4096)
+    parser.add_argument('--replace-base',action='store_true',help='Replace the stopped controller base with the reviewed pristine image')
     parser.add_argument('--activate',action='store_true')
     parser.add_argument('--report',type=Path)
     args=parser.parse_args()
