@@ -7,10 +7,36 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from broker import agent_instructions
 from owner_menu import broker_disk_paths, peer_uid, snapshot
 
 
 class OwnerMenuTest(unittest.TestCase):
+    def test_instructions_from_validation_use_the_public_agent_token(self):
+        validation = SimpleNamespace(token="validation-token", operator_token="validation-operator")
+        public = SimpleNamespace(token_file=Path("/test/agent-token"), listen_port=8741)
+        runner = SimpleNamespace(validation_mode=True, installed=Mock())
+        with patch("broker.load_broker_config", return_value=public), \
+             patch("broker._read_secret", return_value="public-agent-token") as read, \
+             patch("broker.listen_host", return_value="100.64.0.9"):
+            instructions = agent_instructions(None, validation, runner)
+        read.assert_called_once_with(public.token_file, "agent token")
+        runner.installed.assert_not_called()
+        self.assertIn("http://100.64.0.9:8741", instructions)
+        self.assertIn("public-agent-token", instructions)
+        self.assertIn("Remote jobs are disabled.", instructions)
+        self.assertNotIn("validation-token", instructions)
+        self.assertNotIn("validation-operator", instructions)
+
+    def test_instructions_report_verified_public_readiness(self):
+        app = SimpleNamespace(token="public-agent-token", operator_token="operator-token")
+        config = SimpleNamespace(listen_port=8741)
+        runner = SimpleNamespace(validation_mode=False, installed=lambda: True)
+        with patch("broker.listen_host", return_value="100.64.0.9"):
+            instructions = agent_instructions(config, app, runner)
+        self.assertIn("Remote jobs are enabled.", instructions)
+        self.assertNotIn("operator-token", instructions)
+
     def test_local_peer_identity_comes_from_kernel(self):
         first, second = socket.socketpair()
         with first, second:

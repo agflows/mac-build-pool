@@ -8,6 +8,7 @@ private struct OwnerReply: Decodable {
     let leaseId: String?
     let diskBytes: Int64?
     let memoryBytes: Int64?
+    let instructions: String?
 }
 
 private func request(_ operation: String, lease: String? = nil) -> OwnerReply? {
@@ -68,6 +69,7 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let disk = NSMenuItem()
     private let memory = NSMenuItem()
     private lazy var end = NSMenuItem(title: "End Session", action: #selector(endSession), keyEquivalent: "")
+    private lazy var copy = NSMenuItem(title: "Copy Agent Instructions", action: #selector(copyAgentInstructions), keyEquivalent: "")
     private var lease: String?
     private var busy = false
     private var timer: Timer?
@@ -83,6 +85,8 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         disk.toolTip = "Allocated storage for the installed worker. Shared clone blocks can appear in more than one image."
         memory.toolTip = "Resident memory for the broker, VM controller, and their processes."
         menu.addItem(.separator())
+        copy.target = self
+        menu.addItem(copy)
         end.target = self
         menu.addItem(end)
         let quit = NSMenuItem(title: "Quit Mac Build Pool", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -124,6 +128,30 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { [weak self] in
                 self?.busy = false
                 self?.display(reply)
+            }
+        }
+    }
+
+    @objc private func copyAgentInstructions() {
+        copy.isEnabled = false
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let reply = request("agent_instructions")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if reply?.ok == true, let instructions = reply?.instructions {
+                    let pasteboard = NSPasteboard.general
+                    let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+                    pasteboard.declareTypes([.string, concealed], owner: nil)
+                    pasteboard.setData(Data(), forType: concealed)
+                    self.copy.title = pasteboard.setString(instructions, forType: .string)
+                        ? "Agent Instructions Copied" : "Couldn’t Copy Agent Instructions"
+                } else {
+                    self.copy.title = "Agent Instructions Unavailable"
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    self?.copy.title = "Copy Agent Instructions"
+                    self?.copy.isEnabled = true
+                }
             }
         }
     }

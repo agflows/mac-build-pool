@@ -52,7 +52,10 @@ usage, End Session, and Quit. Set a name with `cli.py lease --name`.
 End Session releases the entire leased guest. Quit closes the menu app.
 
 The local control socket accepts the configured owner's macOS UID and
-exposes status and release only. The menu holds no API tokens. Memory is
+exposes status, release, and Copy Agent Instructions. The copy action reads
+the public agent token on demand and copies it with the Tailscale URL and
+current remote readiness. It does not include the operator or validation
+credentials. Memory is
 the combined resident memory of the dedicated service accounts. Disk is
 allocated storage for the installed worker and its data. Retired native
 workspaces and macOS account caches are outside that measurement. APFS shared

@@ -67,7 +67,7 @@ def snapshot(scheduler):
     return status
 
 
-def start(scheduler, *, validation):
+def start(scheduler, *, validation, instructions):
     config = LIBRARY / 'owner.json'
     if not config.exists():
         return
@@ -109,6 +109,11 @@ def start(scheduler, *, validation):
                                 last_status = snapshot(scheduler)
                                 meter_time = time.monotonic()
                             response = {'ok': True, **last_status}
+                        elif request == {'op': 'agent_instructions'}:
+                            try:
+                                response = {'ok': True, 'instructions': instructions()}
+                            except (OSError, ValueError, KeyError, RuntimeError, PolicyError, SystemExit):
+                                response = {'ok': False}
                         elif isinstance(request, dict) and set(request) == {'op', 'leaseId'} and request['op'] == 'release':
                             scheduler.release_lease(request['leaseId'])
                             last_status = None

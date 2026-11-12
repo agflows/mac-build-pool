@@ -111,6 +111,27 @@ def listen_host(cfg) -> str:
     return host
 
 
+def agent_instructions(cfg, app, runner) -> str:
+    if runner.validation_mode:
+        cfg = load_broker_config(BROKER_DIR / "broker.json")
+        token = _read_secret(cfg.token_file, "agent token")
+    else:
+        token = app.token
+    host = listen_host(cfg)
+    if ipaddress.ip_address(host) not in TAILSCALE_NET:
+        raise ValueError("Agent instructions require a Tailscale address")
+    ready = not runner.validation_mode and runner.installed()
+    state = "Remote jobs are enabled." if ready else "Remote jobs are disabled. Wait for the owner to enable them."
+    return "\n".join((
+        "Use agflows/mac-build-pool from a machine on the same Tailscale network.",
+        f"IOS_WORKER_URL=http://{host}:{cfg.listen_port}",
+        f"Agent bearer token: {token}",
+        state,
+        "Save the token in a private file (mode 600) and set IOS_WORKER_TOKEN_FILE to its path.",
+        "Run python3 cli.py health first. Use one lease per session, renew it while working, and release it when done.",
+    ))
+
+
 def tailscale_ipv4() -> str:
     """Read the CGNAT address from the interface table.
 
@@ -169,7 +190,11 @@ def main(argv: list[str]) -> int:
     if getattr(scheduler.runner, 'vm_backend', False):
         from owner_menu import start as start_owner_menu
         try:
-            start_owner_menu(scheduler, validation=scheduler.runner.validation_mode)
+            start_owner_menu(
+                scheduler,
+                validation=scheduler.runner.validation_mode,
+                instructions=lambda: agent_instructions(cfg, app, scheduler.runner),
+            )
         except (OSError, ValueError, KeyError, PolicyError) as exc:
             sys.stderr.write(f"Owner menu unavailable: {type(exc).__name__}\n")
     stop = threading.Event()
