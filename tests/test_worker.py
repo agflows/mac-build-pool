@@ -8,13 +8,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import DEVELOPER_DIR, WorkerConfig, load_worker_config
 from memory import PRESSURE_WARNING, MemorySample
-from policy import PolicyError
-from worker_exec import build, ensure_booted, perform, shutdown, screenshot
+from policy import PolicyError, simulator_input
+from worker_exec import build, ensure_booted, perform, send_simulator_input, shutdown, screenshot
 
 WORKER = "3C8BB98E-6383-446B-AF87-1E1282762A13"
 PERSONAL = "4D015300-4BAE-4E6D-89C9-BC4D454E4216"
@@ -60,6 +61,68 @@ class WorkerGuardTest(unittest.TestCase):
         )
         self.cfg.workspace_root.mkdir()
         self.commands = FakeCommands()
+
+    def test_accessibility_typing_uses_stdin_and_does_not_return_field_values(self):
+        email = "simulator+test@example.test"
+        self.commands = Mock()
+        self.commands.run.return_value = subprocess.CompletedProcess([], 0, json.dumps({
+            "schema": "axe.output.agent-result", "schemaVersion": "2", "didError": False,
+            "data": {"action": {"outcome": "completed"}, "capture": {"rows": [email]}},
+        }).encode(), email.encode())
+        action = {"action": "typeInto", "snapshotId": WORKER, "ref": "e12", "focus": True, "text": email}
+        with patch("worker_exec.is_booted", return_value=True), patch("pathlib.Path.is_file", return_value=True), \
+                patch("execution_policy.require_protected_file"):
+            result = send_simulator_input({"device_id": WORKER, "input_action": action}, self.cfg, self.commands)
+        argv, = self.commands.run.call_args.args
+        self.assertEqual(argv[1:], ["--output", "json", "type", "--agent", "--stdin", "--snapshot-id", WORKER,
+                                   "--ref", "e12", "--focus", "--udid", WORKER])
+        self.assertEqual(self.commands.run.call_args.kwargs["input_bytes"], email.encode())
+        self.assertEqual(result["simulatorUI"]["action"]["outcome"], "completed")
+        self.assertNotIn(email, str(result))
+
+    def test_simulator_actions_reject_unknown_targets_and_options(self):
+        for action in (
+            {"action": "tapElement", "snapshotId": WORKER, "ref": "--help"},
+            {"action": "tapElement", "snapshotId": WORKER, "ref": "e12", "udid": PERSONAL},
+            {"action": "snapshot", "offset": 1},
+            {"action": "tapMatching", "identifier": "field", "label": "Email"},
+            {"action": "waitFor", "condition": "settled", "timeout": 21},
+            {"action": "keyCombo", "modifiers": [227, 227], "code": 25},
+            {"action": "clipboardCopy", "text": "\x00"},
+        ):
+            with self.subTest(action=action), self.assertRaises(PolicyError):
+                simulator_input(action)
+        simulator_input({"action": "clipboardCopy", "text": "Grüße"})
+        self.assertEqual(simulator_input({"action": "tapMatching", "label": "--udid"}),
+                         ["tap", "--agent", "--label=--udid"])
+
+    def test_wait_observes_keyboard_without_sending_input(self):
+        def response(capture):
+            return subprocess.CompletedProcess([], 0, json.dumps({
+                "schema": "axe.output.agent-result", "schemaVersion": "2", "didError": False,
+                "data": {"capture": capture},
+            }).encode(), b"")
+
+        self.commands = Mock()
+        self.commands.run.side_effect = [response({"screenHash": "first"}),
+                                         response({"screenHash": "next", "keyboard": "likelyVisible"})]
+        request = {"device_id": WORKER, "input_action": {"action": "waitFor", "condition": "keyboardVisible"}}
+        with patch("worker_exec.is_booted", return_value=True), patch("pathlib.Path.is_file", return_value=True), \
+                patch("execution_policy.require_protected_file"), patch("worker_exec.time.sleep"):
+            result = send_simulator_input(request, self.cfg, self.commands)
+        self.assertEqual(result["simulatorUI"]["capture"]["screenHash"], "next")
+        self.assertEqual(self.commands.run.call_count, 2)
+        self.assertTrue(all(call.args[0][3] == "describe-ui" for call in self.commands.run.call_args_list))
+
+    def test_clipboard_copy_targets_simulator_with_utf8_stdin(self):
+        self.commands = Mock()
+        self.commands.run.return_value = subprocess.CompletedProcess([], 0, b"", b"")
+        request = {"device_id": WORKER, "input_action": {"action": "clipboardCopy", "text": "Grüße"}}
+        with patch("worker_exec.is_booted", return_value=True):
+            result = send_simulator_input(request, self.cfg, self.commands)
+        self.commands.run.assert_called_once_with(
+            [self.commands.xcrun, "simctl", "pbcopy", WORKER], timeout=25, input_bytes="Grüße".encode())
+        self.assertEqual(result["log"], "")
 
     def test_shutdown_of_personal_simulator_never_reaches_simctl(self) -> None:
         with self.assertRaises(PolicyError) as caught:

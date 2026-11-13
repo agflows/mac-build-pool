@@ -131,6 +131,32 @@ class ApiTest(unittest.TestCase):
         self.scheduler.release_lease(lease)
         self.assertNotEqual(self._request("POST", path, json.dumps(action).encode())[0], 202)
 
+    def test_input_failure_returns_structured_snapshot_until_lease_release(self):
+        lease = self.scheduler.acquire_lease()
+        self.scheduler.revisions["test"] = {"status": "ready"}
+        launch, session = self.scheduler.submit_launch("test", None, lease)
+        self.scheduler.jobs[launch.id].status = "succeeded"
+        self.runner.run = lambda job: {
+            "ok": True,
+            "exitCode": 1,
+            "simulatorUI": {"error": {"code": "screenChanged"}, "capture": {"rows": []}},
+        }
+        action = {"action": "tapElement", "snapshotId": WORKER, "ref": "e12"}
+        status, payload = self._request("POST", f"/v1/sessions/{session}/input", json.dumps(action).encode())
+        self.assertEqual(status, 202)
+        job = json.loads(payload)["jobId"]
+        self.scheduler.step()
+        deadline = time.monotonic() + 2
+        while self.scheduler.get(job).status in ("queued", "running") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        path = f"/v1/jobs/{job}"
+        failed = json.loads(self._request("GET", path)[1])
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["simulatorUI"]["error"]["code"], "screenChanged")
+        self.assertEqual(failed["simulatorUI"]["capture"]["rows"], [])
+        self.scheduler.release_lease(lease)
+        self.assertNotIn("simulatorUI", json.loads(self._request("GET", path)[1]))
+
     def test_personal_simulator_is_forbidden(self) -> None:
         body = json.dumps({"revisionId": "rev0001", "deviceId": PERSONAL}).encode()
         status, payload = self._request("POST", "/v1/sessions", body)

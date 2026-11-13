@@ -29,7 +29,7 @@ from memory import boot_needs_approval, sample_system
 from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_bool, require_configuration, require_recipe, require_public_env
 from tarsafe import extract_source
 from workspace import is_expo_project, is_flutter_project, copy_flutter_sdk, toolchain_paths, workspace_env, preparation_receipt, load_prepared_env
-from policy import simulator_input
+from policy import SIMULATOR_UI_ACTIONS, simulator_input
 
 install_import_path()
 CONFIG_PATH = LIBRARY_ROOT / "worker.json"
@@ -53,7 +53,7 @@ class Commands:
         self.env = worker_child_env(developer_dir)
         self.cwd = Path("/tmp")
 
-    def run(self, argv: list, timeout: int) -> subprocess.CompletedProcess:
+    def run(self, argv: list, timeout: int, *, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
         if not argv or any(not isinstance(part, str) or "\x00" in part for part in argv):
             raise PolicyError("bad_argv", "Command arguments must be strings.")
         if not str(argv[0]).startswith("/"):
@@ -66,6 +66,7 @@ class Commands:
                 cwd=self.cwd,
                 disk_roots=self.disk_roots,
                 disk_budget=self.disk_budget,
+                input_bytes=input_bytes,
             )
         except TimeoutError as exc:
             if len(argv) > 2 and argv[0] == self.xcrun and argv[1] == "simctl":
@@ -261,29 +262,109 @@ def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
 
     action = request.get("input_action")
     arguments = simulator_input(action)
+    kind = action["action"]
     device = _device(request, cfg)
     if cfg.device_platforms.get(device, "iOS") != "iOS":
         raise PolicyError("unsupported_device", "Simulator input currently supports iOS sessions.")
-    axe = LIBRARY_ROOT / "toolchains/axe/axe"
-    if not axe.is_file():
-        raise PolicyError("toolchain_missing", "Install the pinned AXe tool in the reviewed guest image.")
-    require_protected_file(axe, executable=True)
     if not is_booted(request, cfg, commands):
         raise PolicyError("simulator_off", "Launch the leased iOS simulator before sending input.")
-    pinch = axe.with_name("simulator-pinch")
-    if action["action"] == "pinch" and pinch.is_file():
-        require_protected_file(pinch, executable=True)
-        coordinates = [str(action.get(key, "-")) for key in ("x", "y", "radius")]
-        argv = [str(pinch), device, str(action["scale"]), *coordinates]
+    if kind == "clipboardCopy":
+        argv = [commands.xcrun, "simctl", "pbcopy", device]
+    elif kind in {"appearance", "contentSize"}:
+        option = "appearance" if kind == "appearance" else "content_size"
+        argv = [commands.xcrun, "simctl", "ui", device, option, *arguments]
     else:
-        target = ["--udid", device]
-        if arguments[0] == "type":
-            arguments = ["type", *target, *arguments[1:]]
+        axe = LIBRARY_ROOT / "toolchains/axe/axe"
+        if not axe.is_file():
+            raise PolicyError("toolchain_missing", "Install the pinned AXe tool in the reviewed guest image.")
+        require_protected_file(axe, executable=True)
+        pinch = axe.with_name("simulator-pinch")
+        if kind == "pinch" and pinch.is_file():
+            require_protected_file(pinch, executable=True)
+            coordinates = [str(action.get(key, "-")) for key in ("x", "y", "radius")]
+            argv = [str(pinch), device, str(action["scale"]), *coordinates]
         else:
-            arguments += target
-        argv = [str(axe), *arguments]
+            argv = [str(axe), *arguments, "--udid", device]
+    if kind == "waitFor":
+        return _wait_for_simulator_ui(argv, action, commands)
+    if kind in SIMULATOR_UI_ACTIONS:
+        text = action.get("text")
+        return _read_simulator_ui(argv, commands, timeout=25,
+                                  input_bytes=text.encode("utf-8") if text is not None else None)
+    if kind in {"type", "clipboardCopy"}:
+        try:
+            text = action["text"].encode("utf-8")
+            if kind == "clipboardCopy":
+                completed = commands.run(argv, timeout=25, input_bytes=text)
+            else:
+                # Legacy AXe's line reader loses leading/trailing newlines.
+                # Keep its existing literal input semantics for older callers.
+                completed = commands.run([*argv, "--", action["text"]], timeout=25)
+        except TimeoutError:
+            raise CommandFailed("Simulator text operation timed out. Check the field before retrying.", 1) from None
+        if completed.returncode != 0:
+            raise CommandFailed("Simulator text operation failed.", completed.returncode)
+        return {"ok": True, "log": "", "exitCode": 0}
     completed = commands.run(argv, timeout=25)
     return {"ok": True, "log": _check(completed, "Simulator input failed"), "exitCode": 0}
+
+
+def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None):
+    failure = "observationFailed" if argv[1] == "describe-ui" else "actionOutcomeUnknown"
+    try:
+        completed = commands.run([argv[0], "--output", "json", *argv[1:]],
+                                 timeout=timeout, input_bytes=input_bytes)
+        ui = json.loads(completed.stdout)
+    except (ValueError, TimeoutError):
+        return _simulator_ui_error(failure)
+    if (not isinstance(ui, dict) or ui.get("schema") != "axe.output.agent-result"
+            or ui.get("schemaVersion") != "2" or type(ui.get("didError")) is not bool
+            or not isinstance(ui.get("data"), dict)):
+        return _simulator_ui_error(failure)
+    data = ui["data"]
+    result = {"schemaVersion": 1}
+    for key in ("capture", "action", "observation", "cache"):
+        if isinstance(data.get(key), dict):
+            result[key] = {name: value for name, value in data[key].items() if name != "quarantine"}
+    if isinstance(data.get("quarantine"), dict):
+        result["quarantined"] = True
+    if input_bytes is not None:
+        # A text field's refreshed value can contain credentials.
+        result.pop("capture", None)
+    if ui["didError"] or completed.returncode:
+        error = ui.get("error")
+        code = error.get("code") if isinstance(error, dict) else None
+        result["error"] = {"code": code if isinstance(code, str) and code.isalnum() and len(code) <= 64 else failure}
+    elif argv[1] == "describe-ui" and "capture" not in result:
+        return _simulator_ui_error("observationFailed")
+    return {"ok": True, "exitCode": completed.returncode or int(ui["didError"]), "simulatorUI": result}
+
+
+def _simulator_ui_error(code):
+    return {"ok": True, "exitCode": 1, "simulatorUI": {"schemaVersion": 1, "error": {"code": code}}}
+
+
+def _wait_for_simulator_ui(argv, action, commands):
+    deadline = time.monotonic() + action.get("timeout", 10)
+    condition = action["condition"]
+    previous_hash = None
+    latest = {"schemaVersion": 1}
+    while (remaining := deadline - time.monotonic()) > 0:
+        result = _read_simulator_ui(argv, commands, timeout=min(6, remaining))
+        capture = result["simulatorUI"].get("capture")
+        if not result["exitCode"] and isinstance(capture, dict):
+            latest = result["simulatorUI"]
+            screen_hash = capture.get("screenHash")
+            if condition == "settled" and screen_hash and screen_hash == previous_hash:
+                return result
+            if condition == "keyboardVisible" and capture.get("keyboard") == "likelyVisible":
+                return result
+            previous_hash = screen_hash
+        else:
+            previous_hash = None
+        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+    latest["error"] = {"code": "uiWaitTimeout"}
+    return {"ok": True, "exitCode": 1, "simulatorUI": latest}
 
 
 def screenshot(request: dict, cfg, commands: Commands, memory) -> dict:

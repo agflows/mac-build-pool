@@ -97,6 +97,7 @@ and validation rather than installing this as though it were a ready sandbox.
 | `POST /v1/sessions` | Install/launch selected configuration; returns sessionId |
 | `POST /v1/tests` | Run previously built XCTest products |
 | `POST /v1/sessions/{id}/screenshot` | Capture artifact |
+| `POST /v1/sessions/{id}/input` | [Simulator snapshots, input, and device settings](docs/TART_SETUP.md#accessibility-and-text-input) |
 | `POST /v1/sessions/{id}/logs` | Collect simulator logs |
 | `GET /v1/jobs/{id}` and `/logs` | Status and diagnostic tail |
 | `GET /v1/artifacts/{id}` | Download broker-exported artifact |

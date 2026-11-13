@@ -15,6 +15,21 @@ UDID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
 )
 SCHEME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_+.\-]{0,63}$")
+SNAPSHOT_RE = re.compile(r"^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$")
+ELEMENT_REF_RE = re.compile(r"^e[1-9][0-9]{0,7}$")
+SIMULATOR_UI_ACTIONS = frozenset({
+    "snapshot", "tapElement", "tapMatching", "holdElement", "scrollElement", "typeInto", "waitFor",
+})
+GESTURE_PRESETS = frozenset({
+    "scroll-up", "scroll-down", "scroll-left", "scroll-right",
+    "swipe-from-left-edge", "swipe-from-right-edge", "swipe-from-top-edge",
+    "swipe-from-bottom-edge", "swipe-from-top-right-corner",
+})
+CONTENT_SIZES = frozenset({
+    "extra-small", "small", "medium", "large", "extra-large", "extra-extra-large",
+    "extra-extra-extra-large", "accessibility-medium", "accessibility-large",
+    "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large",
+})
 
 # Leo's booted iPhone 17. Shutdown of this device is never a scheduler action.
 BUILTIN_PERSONAL_DEVICES = frozenset({"4D015300-4BAE-4E6D-89C9-BC4D454E4216"})
@@ -38,7 +53,27 @@ def simulator_input(body):
         "displays": (["displays"], {}, {}),
         "button": (["button"], {"button": None}, {"duration": "--duration"}),
         "key": (["key"], {"code": None}, {"duration": "--duration"}),
-        "type": (["type", "--"], {"text": None}, {}),
+        "type": (["type"], {"text": None}, {}),
+        "snapshot": (["describe-ui", "--agent"], {}, {
+            "snapshotId": "--snapshot-id", "offset": "--row-offset", "limit": "--row-limit",
+        }),
+        "tapElement": (["tap", "--agent"], {"snapshotId": "--snapshot-id", "ref": "--ref"}, {}),
+        "tapMatching": (["tap", "--agent"], {}, {"identifier": "--id", "label": "--label"}),
+        "holdElement": (["touch", "--agent", "--down", "--up"], {
+            "snapshotId": "--snapshot-id", "ref": "--ref", "hold": "--delay",
+        }, {}),
+        "scrollElement": (["swipe", "--agent"], {
+            "snapshotId": "--snapshot-id", "ref": "--ref", "direction": "--direction",
+        }, {"distance": "--distance", "duration": "--duration"}),
+        "typeInto": (["type", "--agent", "--stdin"], {
+            "snapshotId": "--snapshot-id", "ref": "--ref", "text": None,
+        }, {"focus": "--focus"}),
+        "waitFor": (["describe-ui", "--agent"], {"condition": None}, {"timeout": None}),
+        "clipboardCopy": ([], {"text": None}, {}),
+        "keyCombo": (["key-combo"], {"modifiers": "--modifiers", "code": "--key"}, {}),
+        "gesture": (["gesture"], {"preset": None}, {"duration": "--duration"}),
+        "appearance": ([], {"style": None}, {}),
+        "contentSize": ([], {"size": None}, {}),
     }
     if action not in schemas:
         raise invalid()
@@ -48,8 +83,14 @@ def simulator_input(body):
         raise invalid()
     if action == "pinch" and ("x" in keys) != ("y" in keys):
         raise invalid()
+    if action == "snapshot" and "offset" in keys and "snapshotId" not in keys:
+        raise invalid()
+    if action == "tapMatching" and len(keys) != 1:
+        raise invalid()
     ranges = {"hold": (0.01, 10), "duration": (0.01, 10), "radius": (1, 4096),
-              "scale": (0.1, 10), "degrees": (-360, 360), "count": (1, 2), "code": (0, 255)}
+              "scale": (0.1, 10), "degrees": (-360, 360), "count": (1, 2), "code": (0, 255),
+              "offset": (0, 12288), "limit": (1, 64), "timeout": (1, 20), "distance": (0.05, 1)}
+    integer_keys = {"count", "code", "offset", "limit", "timeout"}
     for key, flag in {**required, **optional}.items():
         if key not in body:
             continue
@@ -58,15 +99,64 @@ def simulator_input(body):
             if value not in ("home", "lock", "side-button", "siri", "apple-pay"):
                 raise invalid()
         elif key == "text":
-            if not isinstance(value, str) or not value or len(value) > 256 or any(
+            if not isinstance(value, str) or not value or "\x00" in value:
+                raise invalid()
+            if action == "clipboardCopy":
+                try:
+                    encoded = value.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise invalid() from exc
+                if len(encoded) > 8192:
+                    raise invalid()
+            elif len(value) > 256 or any(
                     not (32 <= ord(char) <= 126 or char in "\n\t") for char in value):
                 raise invalid()
+            continue
+        elif key in ("snapshotId", "ref"):
+            pattern = SNAPSHOT_RE if key == "snapshotId" else ELEMENT_REF_RE
+            if not isinstance(value, str) or not pattern.fullmatch(value):
+                raise invalid()
+        elif key == "focus":
+            if type(value) is not bool:
+                raise invalid()
+            if value:
+                command.append(flag)
+            continue
+        elif key == "preset":
+            if not isinstance(value, str) or value not in GESTURE_PRESETS:
+                raise invalid()
+        elif key == "direction":
+            if value not in ("up", "down", "left", "right"):
+                raise invalid()
+        elif key == "style":
+            if value not in ("light", "dark"):
+                raise invalid()
+        elif key == "size":
+            if not isinstance(value, str) or value not in CONTENT_SIZES:
+                raise invalid()
+        elif key in ("identifier", "label"):
+            if not isinstance(value, str) or not 1 <= len(value) <= 256 or not value.isprintable() or not value.strip():
+                raise invalid()
+            command.append(f"{flag}={value}")
+            continue
+        elif key == "modifiers":
+            if (not isinstance(value, list) or not 1 <= len(value) <= 4
+                    or any(type(code) is not int or not 224 <= code <= 231 for code in value)
+                    or len(set(value)) != len(value)):
+                raise invalid()
+            value = ",".join(map(str, value))
+        elif key == "condition":
+            if value not in ("keyboardVisible", "settled"):
+                raise invalid()
+            continue
         else:
             low, high = ranges.get(key, (0, 8192))
             if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
                 raise invalid()
-            if (key in ("count", "code") and type(value) is not int) or (key == "scale" and value == 1):
+            if (key in integer_keys and type(value) is not int) or (key == "scale" and value == 1):
                 raise invalid()
+            if key == "timeout":
+                continue
         if flag:
             command.append(flag)
         command.append(str(value))

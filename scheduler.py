@@ -174,7 +174,12 @@ class Scheduler:
                 raise KeyError(lease_id)
             self.lease["status"] = "released"
             for job in self.jobs.values():
-                if job.lease_id == lease_id and job.status in ("queued", "waiting_for_approval"):
+                if job.lease_id != lease_id:
+                    continue
+                if job.kind == "input":
+                    job.result.pop("simulatorUI", None)
+                if job.status in ("queued", "waiting_for_approval"):
+                    job.input_action = None
                     job.status = "failed"
                     job.error = "session released"
         hook=getattr(self.runner,'lease_release',None)
@@ -514,6 +519,11 @@ class Scheduler:
                 current.result = result if isinstance(result, dict) else {"ok": True}
                 current.log = log
                 current.exit_code = result.get("exitCode") if isinstance(result, dict) else 0
+                if current.kind == "input" and isinstance(current.result.get("simulatorUI"), dict) and current.exit_code:
+                    current.status = "failed"
+                    error = current.result["simulatorUI"].get("error")
+                    current.error = error.get("code", "simulatorInputFailed") if isinstance(error, dict) else "simulatorInputFailed"
+                    return
                 self._register_artifact(current)
                 if current.kind == "ingest" and current.revision_id in self.revisions:
                     self.revisions[current.revision_id]["status"] = "ready"
@@ -533,6 +543,7 @@ class Scheduler:
                     self.revisions[current.revision_id]["status"] = "failed"
         finally:
             with self._lock:
+                job.input_action = None
                 self.running_ids.discard(job_id)
                 self._last_busy = self.clock()
             self._wake.set()

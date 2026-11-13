@@ -286,7 +286,7 @@ def accept_source(app: App, body: bytes, content_type: str):
 
 
 def job_view(job) -> dict:
-    return {
+    view = {
         "jobId": job.id,
         "kind": job.kind,
         "status": job.status,
@@ -302,6 +302,10 @@ def job_view(job) -> dict:
         "exitCode": job.exit_code,
         "error": job.error,
     }
+    ui = job.result.get("simulatorUI")
+    if job.kind == "input" and isinstance(ui, dict):
+        view["simulatorUI"] = ui
+    return view
 
 
 def read_json(body: bytes) -> dict:

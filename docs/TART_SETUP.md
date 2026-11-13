@@ -65,6 +65,47 @@ and degrees), `describe` (accessibility tree), `type` (US-layout text),
 and `key` (HID code). The button action accepts home, lock, side-button,
 siri and apple-pay.
 
+### Accessibility and text input
+
+Read a structured snapshot before acting on a control. The completed input job
+includes `simulatorUI.capture` with the AXe snapshot ID, visible rows, screen
+dimensions in points and, when applicable, a pagination cursor. Read the next
+page with the same snapshot ID and `page.nextOffset` as `offset`.
+
+```sh
+python3 cli.py input SESSION '{"action":"snapshot"}'
+python3 cli.py input SESSION '{"action":"tapElement","snapshotId":"SNAPSHOT_UUID","ref":"e12"}'
+python3 cli.py input SESSION '{"action":"tapMatching","identifier":"signIn.continue"}'
+python3 cli.py input SESSION '{"action":"waitFor","condition":"settled","timeout":8}'
+python3 cli.py input SESSION '{"action":"waitFor","condition":"keyboardVisible","timeout":8}'
+python3 cli.py input SESSION - < action.json
+```
+
+Use the returned snapshot for the next action. If an action returns
+`snapshotExpired` or `screenChanged`, inspect the latest screen before choosing
+the next action. If delivery is uncertain, check the UI before retrying. The
+`settled` wait checks consecutive matching accessibility screen hashes.
+`keyboardVisible` uses AXe's positive evidence for an on-screen keyboard.
+A hardware keyboard can still type into a focused field when the on-screen
+keyboard is absent.
+
+For a text field, send `typeInto` with its snapshot ID, ref and text. Set
+`focus` to true to let AXe focus the field first. Use standard input when the
+JSON contains test credentials. The result reports action status without a
+copy of the field value. `typeInto` uses US-layout keystrokes. For Unicode,
+`clipboardCopy` writes UTF-8 text to the leased simulator pasteboard. Follow
+with `keyCombo` to send Command-V (`modifiers: [227]`, `code: 25`) or use
+the app's Paste control. Clipboard support depends on the installed
+Xcode/simulator toolchain. The physical Mac's clipboard is outside this path.
+
+Use `gesture` with a preset such as `swipe-from-bottom-edge`,
+`swipe-from-top-right-corner` or `scroll-down` for system navigation. Use
+`holdElement` for a long press on a snapshot ref and `scrollElement` for a
+directional swipe inside a snapshot's scroll area. `appearance` and
+`contentSize` change the iPhone's UI settings through simctl. Use
+`screenshot` for visual evidence and for screens with limited accessibility
+information.
+
 ## Apple Watch simulators
 
 Use Xcode's complete Apple watchOS 26.5 arm64 `.exportedBundle` with

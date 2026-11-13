@@ -11,6 +11,7 @@ import os
 import signal
 import stat
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -339,13 +340,14 @@ def run_contained(
     disk_roots: list[Path] | None = None,
     disk_budget: int = DISK_BUDGET,
     cwd: Path | str = "/tmp",
+    input_bytes: bytes | None = None,
 ) -> subprocess.CompletedProcess:
     if not argv or not argv[0].startswith("/") or any("\x00" in part or not isinstance(part, str) for part in argv):
         raise ValueError("refusing arguments")
     apply_rlimits()
     process = subprocess.Popen(
         argv,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
@@ -359,6 +361,17 @@ def run_contained(
         _start_pump(process.stdout, stdout),
         _start_pump(process.stderr, stderr),
     ]
+    if input_bytes is not None:
+        def write_input():
+            try:
+                with process.stdin as stream:
+                    stream.write(input_bytes)
+            except (BrokenPipeError, OSError):
+                pass
+
+        writer = threading.Thread(target=write_input, daemon=True)
+        writer.start()
+        pumps.append(writer)
     start = time.monotonic()
     timed_out = False
     over_disk = False
@@ -393,8 +406,6 @@ def run_contained(
 
 
 def _start_pump(pipe, sink: Tail):
-    import threading
-
     def _pump() -> None:
         if pipe is None:
             return
