@@ -1,4 +1,5 @@
 import json
+import io
 import os
 from pathlib import Path
 import socket
@@ -14,6 +15,7 @@ from unittest.mock import patch
 from vm_transport import communicate
 from host_egress import Relay
 from egress_policy import EgressDenied
+from worker_cache import WorkerCache
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -27,6 +29,15 @@ class TransportTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             communicate([sys.executable,'-c','import sys;sys.stdout.buffer.write(b"x"*1000000)'],
                         b'',env={'PATH':'/usr/bin:/bin'},timeout=10,cap=100)
+
+    def test_file_streams_transfer_without_buffering_on_host(self):
+        body = b'hello simulator' * 10240
+        destination = io.BytesIO()
+        code, output, error = communicate(
+            [sys.executable, '-c', 'import shutil,sys;shutil.copyfileobj(sys.stdin.buffer,sys.stdout.buffer)'],
+            io.BytesIO(body), env={'PATH':'/usr/bin:/bin'}, timeout=10, cap=len(body), sink=destination)
+        self.assertEqual((code, output, error), (0, b'', b''))
+        self.assertEqual(destination.getvalue(), body)
 
     def test_hung_guest_transport_is_terminated(self):
         with self.assertRaises(TimeoutError):
@@ -46,7 +57,7 @@ class RelayTest(unittest.TestCase):
         self.process=subprocess.Popen([sys.executable,str(ROOT/'guest_proxy.py'),'--tls-dir',str(self.tls)],cwd='/private/tmp',
                          env={'PATH':'/usr/bin:/bin','PYTHONDONTWRITEBYTECODE':'1'},stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
-        self.relay=Relay(self.process)
+        self.relay=Relay(self.process, allowed={'registry.npmjs.org', 'backend.example.test'})
         self.addCleanup(self.relay.close)
         # Guest proxy listener starts independently of the host reader.
         import time
@@ -98,6 +109,40 @@ class RelayTest(unittest.TestCase):
                     if not part:break
                     result.extend(part)
                 self.assertEqual(bytes(result).split(b'\r\n\r\n',1)[1],data)
+
+    def test_package_download_is_replayed_without_upstream_connection(self):
+        self.relay.cache = WorkerCache(self.tls / 'cache', capacity=10000, free_reserve=0)
+        self.addCleanup(self.relay.cache.db.close)
+        self.relay.project = 'fixture'
+        upstream, origin = socket.socketpair()
+        self.addCleanup(upstream.close)
+        self.addCleanup(origin.close)
+        response = (b'HTTP/1.1 200 OK\r\nContent-Length: 7\r\n'
+                    b'Cache-Control: public, max-age=300\r\nConnection: close\r\n\r\nfixture')
+
+        def server():
+            request = b''
+            while not request.endswith(b'\r\n\r\n'):
+                part = origin.recv(4096)
+                if not part:
+                    return
+                request += part
+            origin.sendall(response)
+            origin.shutdown(socket.SHUT_WR)
+
+        threading.Thread(target=server, daemon=True).start()
+        threading.Thread(target=self.relay.run, daemon=True).start()
+        context = ssl.create_default_context(cafile=str(self.tls/'proxy-leaf.pem'))
+        with patch('host_egress.connect', side_effect=[upstream, AssertionError('unexpected cache miss')]) as connect:
+            for _ in range(2):
+                client, header = self.request()
+                self.assertIn(b'200 Connection Established', header)
+                with context.wrap_socket(client, server_hostname='registry.npmjs.org') as connection:
+                    connection.sendall(b'GET /test/-/test-1.0.0.tgz HTTP/1.1\r\n'
+                                       b'Host: registry.npmjs.org\r\n\r\n')
+                    output = b''.join(iter(lambda: connection.recv(4096), b''))
+                    self.assertEqual(output, response)
+            connect.assert_called_once()
 
     def test_disallowed_tunnel_is_forbidden(self):
         with patch('host_egress.connect',side_effect=EgressDenied('not approved')):

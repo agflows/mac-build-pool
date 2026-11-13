@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -15,6 +16,7 @@ import sys
 import time
 import hashlib
 import shutil
+import sqlite3
 
 _CODE_ROOT=str(Path(__file__).resolve().parent)
 if _CODE_ROOT not in sys.path:
@@ -28,11 +30,12 @@ from owner_menu import usage
 from policy import require_id, check_device, PolicyError
 from tart_lease import OfflineTart, LeaseController, LeaseError
 from vm_transport import communicate, read_frame
+from worker_cache import CacheFull, HEX, MAX_ARCHIVE, WorkerCache
 
 ALLOWED_OPS = frozenset({'vm_start','prepare','build','launch','uitest','screenshot','logs','reset','boot','booted','shutdown','input'})
 PERSONAL = '4D015300-4BAE-4E6D-89C9-BC4D454E4216'
 FIELDS = frozenset({'op','lease_id','ttl','job_id','revision_id','session_id','device_id','scheme','recipe',
-                    'public_env','configuration','for_testing','artifact_id','source_base64','approved','input_action'})
+                    'public_env','configuration','for_testing','artifact_id','source_base64','approved','input_action','project','resume_id'})
 
 STOP_GUEST_SIMULATORS = b"""
 import json
@@ -61,11 +64,13 @@ if not all_stopped(90):
 
 
 class BuildTart(OfflineTart):
-    def __init__(self, *args, allowed=PACKAGE_HOSTS, base_identity=None, **kwargs):
+    def __init__(self, *args, allowed=PACKAGE_HOSTS, base_identity=None, cache=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.allowed = allowed
         self.relays = {}
         self.base_identity=base_identity
+        self.cache = cache
+        self.cache_projects = {}
 
     def check_base(self):
         if self.base_identity is None:
@@ -90,7 +95,8 @@ class BuildTart(OfflineTart):
                 '/usr/bin/python3','-I','/Library/ios-worker/guest_proxy.py'], env=self.env,
                 cwd='/private/tmp',stdin=subprocess.PIPE,stdout=subprocess.PIPE,
                 stderr=self.logs[name], start_new_session=True)
-            relay = Relay(process, allowed=self.allowed)
+            relay = Relay(process, allowed=self.allowed, cache=self.cache,
+                          project=self.cache_projects.get(name))
             self.relays[name] = relay
             threading.Thread(target=relay.run, daemon=True).start()
         deadline=time.monotonic()+30
@@ -130,6 +136,7 @@ class BuildTart(OfflineTart):
 
     def stop(self, name):
         with self.lock:
+            self.cache_projects.pop(name, None)
             relay = self.relays.pop(name, None)
             if relay:
                 relay.close()
@@ -143,6 +150,39 @@ class BuildTart(OfflineTart):
         if code:
             raise LeaseError('guest simulators failed to shut down before build: '
                              + error.decode(errors='replace')[-500:])
+
+    def transfer_app(self, vm, operation, device, *args, source=b'', sink=None):
+        # The installed controller owns this fixed script. Only simulator IDs and
+        # validated build selectors enter argv. The guest runs it as iosagent.
+        helper = Path(__file__).with_name('guest_cache.py')
+        if self.base_identity:
+            require_protected_file(helper)
+        return communicate([self.binary, 'exec', '-i', vm, '/usr/bin/sudo', '-n', '-u', 'iosagent',
+                            '/usr/bin/python3', '-I', '-c', helper.read_text(),
+                            operation, device, *args], source, env=self.env,
+                           timeout=420 if operation == 'export' else 1260,
+                           cap=MAX_ARCHIVE if sink else 1024 * 1024, sink=sink)
+
+    def save_app(self, vm, project, resume_id, logical, payload):
+        if not self.cache:
+            return False
+        try:
+            with self.cache.stage(MAX_ARCHIVE, project, incremental=True) as (entry, stream):
+                code, _, _ = self.transfer_app(vm, 'export', payload['device_id'],
+                                               payload['revision_id'], payload['configuration'], sink=stream)
+                if code or not stream.tell():
+                    return False
+                stream.flush()
+                os.fsync(stream.fileno())
+                digest = hashlib.sha256()
+                with open(stream.name, 'rb') as staged:
+                    for block in iter(lambda: staged.read(1024 * 1024), b''):
+                        digest.update(block)
+                return self.cache.publish(entry, 'binary', project, digest.hexdigest(),
+                                          resume=resume_id, device=logical,
+                                          base=self.base_identity['diskSHA256'])
+        except (CacheFull, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError):
+            return False
 
     def operation(self, name, request):
         timeout = {'prepare':2700,'build':BUILD_TIMEOUT+60,'uitest':2160,'launch':1320,'boot':1200,
@@ -162,7 +202,7 @@ class BuildTart(OfflineTart):
 
 
 class Service:
-    def __init__(self, backend, *, logical_device, guest_device, watch_devices=None):
+    def __init__(self, backend, *, logical_device, guest_device, watch_devices=None, cache=None):
         logical_device = check_device(logical_device, {logical_device}, {PERSONAL})
         guest_device = check_device(guest_device, {guest_device}, {PERSONAL})
         self.devices = {logical_device: guest_device}
@@ -174,6 +214,7 @@ class Service:
                 raise LeaseError('iPhone and Watch mappings must be distinct')
             self.devices[watch_logical] = watch_guest
         self.backend = backend
+        self.cache = cache
         self.controller = LeaseController(backend,max_ttl=300,max_lifetime=7200)
         self.job_lock = threading.Lock()
         self.loaded = set()
@@ -186,16 +227,44 @@ class Service:
         op = request.get('op')
         if op == 'capabilities':
             self.backend.check_base()
-            return {'ok':True,'version':1,'backend':'tart','network':'disconnected-ethernet+allowlisted-connect',
+            return {'ok':True,'version':1,'cacheEnabled':self.cache is not None,'backend':'tart','network':'disconnected-ethernet+allowlisted-connect',
                     'filesystem':'no-host-shares','signing':False,'usb':False}
         if op == 'status':
             return {'ok':True,**self.controller.status(),'lastStopReason':self.last_stop_reason}
         if op == 'usage':
             roots = (self.backend.home, self.backend.log_root, self.backend.home.parent/'controller.log')
+            if self.cache:
+                roots += (self.cache.root,)
             return {'ok':True, **self.controller.status(), **usage(roots)}
         lease = request.get('lease_id')
         if op == 'reserve':
-            result = self.controller.reserve(lease,request.get('ttl',300))
+            project = request.get('project')
+            resume = request.get('resume_id')
+            if project is not None and (not self.cache or not isinstance(project, str) or not HEX.fullmatch(project)):
+                raise LeaseError('Invalid cache project')
+            if resume is not None and (not project or not isinstance(resume, str) or not HEX.fullmatch(resume)):
+                raise LeaseError('Invalid cache resume ID')
+            new_resume = request.get('session_id')
+            if project and (not isinstance(new_resume, str) or not HEX.fullmatch(new_resume)):
+                raise LeaseError('Invalid new cache resume ID')
+            device = None
+            if resume:
+                metadata = self.cache.lookup_resume(resume, project)
+                if not metadata or metadata[1] != self.backend.base_identity['diskSHA256']:
+                    return {'ok': True, 'cacheMiss': True}
+                device = check_device(metadata[0], self.devices.keys(), {PERSONAL})
+                if request.get('device_id') and request['device_id'] != device:
+                    raise LeaseError('Cached build targets another simulator')
+            with self.controller.lock:
+                result = self.controller.reserve(lease,request.get('ttl',300))
+                active = self.controller.lease
+                active['project'] = project
+                active['resume_id'] = resume
+                active['new_resume_id'] = new_resume
+                if project:
+                    self.backend.cache_projects[active['vm']] = project
+            if device:
+                result['deviceId'] = device
             self.loaded.clear()
             self.last_stop_reason=None
             self.last_lease=lease
@@ -208,7 +277,7 @@ class Service:
             self.controller.release(lease)
             self.loaded.clear()
             return {'ok':True,'released':True}
-        if op not in ALLOWED_OPS:
+        if op not in ALLOWED_OPS and op != 'restore':
             raise LeaseError('unsupported operation')
         if request.get('device_id'):
             check_device(request['device_id'],self.devices.keys(),{PERSONAL})
@@ -219,6 +288,23 @@ class Service:
             # controller caller remains the trusted broker account, not a job.
             self.controller.start(lease)
             vm = self.controller.require_active(lease)
+            with self.controller.lock:
+                active = self.controller._authorized(lease)
+                project = active['project']
+                resume = active['resume_id']
+                new_resume = active['new_resume_id']
+            if op == 'restore':
+                if not self.cache or not project or not resume:
+                    raise LeaseError('Lease does not have a cached app')
+                with self.cache.read('binary', resume, project=project) as cached:
+                    if not cached or cached[-1] != self.backend.base_identity['diskSHA256'] or cached[-2] != request['device_id']:
+                        raise LeaseError('Cached app was evicted or is incompatible')
+                    code, output, error = self.backend.transfer_app(vm, 'restore', self.devices[request['device_id']],
+                                                                     source=cached[0])
+                    if code:
+                        raise LeaseError('Cached app restore failed: '+error.decode(errors='replace')[-500:])
+                    self.controller.require_active(lease)
+                    return json.loads(output)
             if op=='vm_start':
                 return {'ok':True,'log':'leased VM ready; simulator remains off'}
             payload = dict(request)
@@ -249,6 +335,13 @@ class Service:
                 self.controller.release(lease)
                 self.loaded.clear()
                 return result
+            if result.get('ok') is True and op == 'build' and project and new_resume:
+                if payload.get('device_id') and self.backend.save_app(vm, project, new_resume, request['device_id'], payload):
+                    result['resumeId'] = new_resume
+                    with self.controller.lock:
+                        active['new_resume_id'] = secrets.token_hex(32)
+                else:
+                    result['cacheStored'] = False
             if result.get('ok') is True and revision:
                 if op=='reset':
                     self.loaded.discard(revision)
@@ -279,7 +372,7 @@ def serve(service, path: Path, stop, mode=0o600):
         def client(connection):
             try:
                 with connection:
-                    connection.settimeout(3000)
+                    connection.settimeout(3450)
                     try:
                         request=read_frame(connection)
                         response=service.dispatch(request)
@@ -351,11 +444,17 @@ def main():
                 or Path(cfg['socket'])!=Path('/Library/ios-worker/control/vm.sock')):
             raise LeaseError('installed controller paths are fixed')
         require_protected_file(Path(cfg['tart']),executable=True)
+    cache = None
+    if not args.trial:
+        try:
+            cache = WorkerCache(Path(cfg['home']).parent / 'cache')
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            print(f'Worker cache unavailable: {type(exc).__name__}', file=sys.stderr, flush=True)
     backend=BuildTart(Path(cfg['tart']),Path(cfg['home']),cfg['base'],Path(cfg['logs']),
                       cfg.get('memory_mb',6144),allowed=frozenset(cfg.get('allowed_hosts',PACKAGE_HOSTS)),
-                      base_identity=cfg.get('base_identity'))
+                      base_identity=cfg.get('base_identity'),cache=cache)
     service=Service(backend,logical_device=cfg['logical_device'],guest_device=cfg['guest_device'],
-                    watch_devices=cfg.get('watch_devices'))
+                    watch_devices=cfg.get('watch_devices'),cache=cache)
     stop=threading.Event()
     for sig in (signal.SIGTERM,signal.SIGINT):
         signal.signal(sig,lambda *_:stop.set())

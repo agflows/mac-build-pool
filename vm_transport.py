@@ -10,12 +10,14 @@ import time
 LIMIT = 96 * 1024 * 1024
 
 
-def communicate(argv, payload, *, env, timeout, cap=64 * 1024 * 1024):
-    if len(payload) > LIMIT:
+def communicate(argv, payload, *, env, timeout, cap=64 * 1024 * 1024, sink=None):
+    streamed = hasattr(payload, 'read')
+    if not streamed and len(payload) > LIMIT:
         raise ValueError('VM request exceeds transfer cap')
     process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                env=env, cwd='/private/tmp', start_new_session=True, close_fds=True)
-    output, error, offset = bytearray(), bytearray(), 0
+    output, error, offset, written = bytearray(), bytearray(), 0, 0
+    chunk_in = b""
     selector = selectors.DefaultSelector()
     for stream, event, label in ((process.stdin, selectors.EVENT_WRITE, 'in'),
                                  (process.stdout, selectors.EVENT_READ, 'out'),
@@ -30,12 +32,20 @@ def communicate(argv, payload, *, env, timeout, cap=64 * 1024 * 1024):
             for key, event in selector.select(timeout=min(0.25, max(0, deadline-time.monotonic()))):
                 stream = key.fileobj
                 if key.data == 'in':
-                    if offset < len(payload):
+                    if not chunk_in:
+                        if streamed:
+                            chunk_in = payload.read(65536)
+                        else:
+                            chunk_in = payload[offset:offset+65536]
+                            offset += len(chunk_in)
+                    if chunk_in:
                         try:
-                            offset += os.write(stream.fileno(), payload[offset:offset+65536])
+                            count = os.write(stream.fileno(), chunk_in)
+                            chunk_in = chunk_in[count:]
                         except BrokenPipeError:
-                            offset = len(payload)
-                    if offset == len(payload):
+                            selector.unregister(stream)
+                            stream.close()
+                    else:
                         selector.unregister(stream)
                         stream.close()
                 else:
@@ -44,10 +54,18 @@ def communicate(argv, payload, *, env, timeout, cap=64 * 1024 * 1024):
                         selector.unregister(stream)
                         stream.close()
                         continue
-                    sink = output if key.data == 'out' else error
-                    sink.extend(chunk)
-                    if len(sink) > (cap if key.data == 'out' else 1024*1024):
-                        raise ValueError('VM output exceeds transfer cap')
+                    if key.data == 'out':
+                        written += len(chunk)
+                        if written > cap:
+                            raise ValueError('VM output exceeds transfer cap')
+                        if sink is None:
+                            output.extend(chunk)
+                        else:
+                            sink.write(chunk)
+                    else:
+                        error.extend(chunk)
+                        if len(error) > 1024 * 1024:
+                            raise ValueError('VM error output exceeds transfer cap')
         return process.wait(timeout=max(1, deadline-time.monotonic())), bytes(output), bytes(error)
     finally:
         selector.close()

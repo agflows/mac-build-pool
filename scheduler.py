@@ -8,6 +8,7 @@ POST /v1/jobs/<id>/approve.
 from __future__ import annotations
 
 import sys
+import secrets
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -118,7 +119,7 @@ class Scheduler:
         return job
 
     def acquire_lease(self, ttl: int = 300, boot_simulator: bool = False, device_id: Optional[str] = None,
-                      name: Optional[str] = None) -> str:
+                      name: Optional[str] = None, *, project=None, resume_id=None) -> str:
         if type(ttl) is not int or not 1 <= ttl <= 300:
             raise PolicyError('invalid_body','Lease duration must be 1 to 300 seconds.')
         if type(boot_simulator) is not bool:
@@ -127,19 +128,31 @@ class Scheduler:
                                  or not name.isprintable()):
             raise PolicyError('invalid_body', 'Session name must contain 1–80 printable characters.')
         device = self._device(device_id)
+        if project and not getattr(self.runner, 'vm_backend', False):
+            raise PolicyError('isolation_required', 'Caching requires the VM worker.')
+        new_resume = secrets.token_hex(32) if project else None
         with self._lock:
             if self.running_ids or (self.lease and self.lease.get("status") == "active"):
                 raise PolicyError("session_busy", "Another session holds the simulator.")
             lease_id = _new_id()
             hook = getattr(self.runner,'lease_acquire',None)
             if hook:
-                hook(lease_id,ttl)
+                if project:
+                    reserved = hook(lease_id,ttl,project=project,resume_id=resume_id,
+                                    new_resume_id=new_resume,device=device_id)
+                    device = self._device(reserved.get('deviceId', device))
+                else:
+                    hook(lease_id,ttl)
             self.lease = {"id": lease_id, "status": "active", "expires": self.clock()+ttl,
                           "hard_deadline":self.clock()+7200, "name":name.strip() if name else None}
             if getattr(self.runner,'vm_backend',False):
-                session_id = _new_id() if boot_simulator else None
-                job=Job(id=_new_id(),kind='boot' if boot_simulator else 'vm_start',
-                        device_id=device if boot_simulator else None,lease_id=lease_id,
+                if new_resume:
+                    self.lease['resumeId'] = resume_id or new_resume
+                interactive = boot_simulator or resume_id is not None
+                session_id = _new_id() if interactive else None
+                kind = 'restore' if resume_id else 'boot' if interactive else 'vm_start'
+                job=Job(id=_new_id(),kind=kind,
+                        device_id=device if interactive else None,lease_id=lease_id,
                         session_id=session_id)
                 self._put_locked(job)
                 self.lease['startJobId']=job.id

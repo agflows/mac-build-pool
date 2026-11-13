@@ -8,6 +8,8 @@ peer address has to fall in the Tailscale CGNAT range.
 from __future__ import annotations
 
 import hmac
+import hashlib
+import re
 import json
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -159,6 +161,7 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
                      "securityBoundary": "unix-account" if mode == "native-user" else ('macOS-vm' if vm_backend else "external-vm-controller-required"),
                      "networkIsolationVerified": bool(vm_backend and installed and scheduler.runner.verified()),
                      "remoteTrial": app.trial_peer is not None,
+                     "cacheEnabled": installed and getattr(scheduler.runner, "cache_enabled", lambda: False)(),
                      "leaseActive":lease.get('status')=='active',
                      "leaseExpiresIn":max(0,lease.get('expires',0)-scheduler.clock()),
                      "simulators":[{"deviceId":device,"platform":platforms.get(device,"iOS")}
@@ -169,10 +172,20 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         return accept_source(app, body, content_type)
     if method == "POST" and segments == ["v1", "leases"]:
         data=read_json(body)
+        project = data.get('project')
+        resume = data.get('resumeId')
+        if project is not None:
+            project = require_id(project, 'project')
+            project = hmac.new(app.token.encode(), b'worker-cache-project\0'+project.encode(),
+                               hashlib.sha256).hexdigest()
+        if resume is not None:
+            if project is None or not isinstance(resume, str) or not re.fullmatch('[0-9a-f]{64}', resume):
+                raise PolicyError('invalid_body', 'Resume requires a project and a valid resume ID.')
         lease_id=scheduler.acquire_lease(data.get('ttl',300),data.get('bootSimulator',False),
-                                         guard_device(scheduler, data),data.get('name'))
+                                         guard_device(scheduler, data),data.get('name'),
+                                         project=project,resume_id=resume)
         lease=scheduler.lease
-        metadata={key:lease[key] for key in ('startJobId','sessionId') if key in lease}
+        metadata={key:lease[key] for key in ('startJobId','sessionId','resumeId') if key in lease}
         return 201, {"leaseId":lease_id,"expiresIn":data.get('ttl',300),**metadata}, JSON
     if method == "POST" and len(segments)==4 and segments[:2]==["v1","leases"] and segments[3]=='renew':
         data=read_json(body)
@@ -301,6 +314,7 @@ def job_view(job) -> dict:
         "forTesting": job.for_testing,
         "exitCode": job.exit_code,
         "error": job.error,
+        **{key: job.result[key] for key in ("resumeId", "cacheStored") if key in job.result},
     }
     ui = job.result.get("simulatorUI")
     if job.kind == "input" and isinstance(ui, dict):
@@ -394,6 +408,8 @@ def status_for(exc: PolicyError) -> int:
         return 413
     if exc.code == "storage_limit":
         return 507
+    if exc.code == "cache_miss":
+        return 404
     if exc.code == "session_busy":
         return 409
     return 400

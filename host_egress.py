@@ -2,18 +2,24 @@
 import base64
 import json
 import socket
+import sqlite3
 import subprocess
 import threading
 import queue
+from contextlib import ExitStack
+
+from cache_http import cache_key, capture
 
 from egress_policy import connect,EgressDenied,PACKAGE_HOSTS
 from http_policy import HTTPGate
 
 class Relay:
-    def __init__(self,process,*,allowed=PACKAGE_HOSTS,host_addresses=()):
+    def __init__(self,process,*,allowed=PACKAGE_HOSTS,host_addresses=(), cache=None, project=None):
         self.process=process
         self.allowed=allowed
         self.host_addresses=host_addresses
+        self.cache=cache
+        self.project=project
         self.connections={}
         self.lock=threading.RLock()
         self.output_lock=threading.Lock()
@@ -30,43 +36,99 @@ class Relay:
         with self.lock:state=self.connections.pop(cid,None)
         if state:
             state['ready'].set()
-            try:state['socket'].shutdown(socket.SHUT_RDWR)
-            except OSError:pass
-            state['socket'].close()
+            if state['socket'] is not None:
+                try:state['socket'].shutdown(socket.SHUT_RDWR)
+                except OSError:pass
+                state['socket'].close()
         self.send({'op':'close','id':cid})
 
-    def open(self,message):
-        cid=message['id']
-        try:
-            connection=connect(message.get('host'),message.get('port'),allowed=self.allowed,host_addresses=self.host_addresses)
-            state={'socket':connection,'ready':threading.Event(),'gate':HTTPGate(message['host']),
-                   'request':bytearray(),'outbound':queue.Queue(maxsize=64)}
+    def forward(self, cid, state):
+        host = state['gate'].host
+        request = bytes(state['request'])
+        key = cache_key(host, request) if self.cache and self.project else None
+        if key:
+            with ExitStack() as stack:
+                try:
+                    cached = stack.enter_context(self.cache.read('dependency', key, project=self.project))
+                except (OSError, sqlite3.Error):
+                    cached = None
+                if cached:
+                    for data in iter(lambda: cached[0].read(32768), b''):
+                        self.send({'op':'data','id':cid,'data':base64.b64encode(data).decode()})
+                    return
+        connection = state['socket']
+        if connection is None:
+            connection = connect(host, 443, allowed=self.allowed, host_addresses=self.host_addresses)
             with self.lock:
-                if self.closed or cid not in self.connections:
-                    connection.close();return
-                self.connections[cid]=state
-            self.send({'op':'opened','id':cid})
-            if not state['ready'].wait(30):raise EgressDenied('request headers timed out')
-            with self.lock:
-                if self.connections.get(cid) is not state:return
-            connection.sendall(state['request'])
-            state['request'].clear()
-            received=0
+                if self.connections.get(cid) is not state:
+                    connection.close()
+                    return
+                state['socket'] = connection
+        if key:
+            request = b'\r\n'.join(
+                line for line in request.split(b'\r\n') if not line.lower().startswith(b'accept-encoding:')
+            ).replace(b'\r\n\r\n', b'\r\nAccept-Encoding: identity\r\n\r\n', 1)
+        connection.sendall(request)
+        state['request'].clear()
+        received = 0
+        header = bytearray()
+        append = None
+        with ExitStack() as stack:
             while True:
                 while not state['outbound'].empty():
                     connection.settimeout(20)
                     connection.sendall(state['outbound'].get_nowait())
                 connection.settimeout(0.05)
                 try:
-                    data=connection.recv(32768)
+                    data = connection.recv(32768)
                 except socket.timeout:
                     continue
-                if not data:break
-                received+=len(data)
-                if received>512*1024*1024:raise EgressDenied('connection byte limit')
+                if not data:
+                    break
+                received += len(data)
+                if received > 512 * 1024 * 1024:
+                    raise EgressDenied('connection byte limit')
                 state['gate'].response(data)
+                if key:
+                    header.extend(data)
+                    boundary = header.find(b'\r\n\r\n')
+                    if boundary >= 0:
+                        end = boundary + 4
+                        append = stack.enter_context(capture(self.cache, key, bytes(header[:end]), self.project))
+                        if append:
+                            append(header[end:])
+                        key = None
+                        header.clear()
+                    elif len(header) > 32768:
+                        key = None
+                        header.clear()
+                elif append:
+                    append(data)
                 self.send({'op':'data','id':cid,'data':base64.b64encode(data).decode()})
-        except (ValueError,OSError):
+
+    def open(self,message):
+        cid=message['id']
+        try:
+            host, port = message.get('host'), message.get('port')
+            if not isinstance(host, str) or host not in self.allowed or type(port) is not int or port != 443:
+                raise EgressDenied('destination is not approved')
+            lazy = self.cache and self.project and host in {'registry.npmjs.org', 'registry.npmjs.com',
+                                                              'pub.dev', 'repo.reactnative.dev'}
+            connection = None if lazy else connect(host, port, allowed=self.allowed, host_addresses=self.host_addresses)
+            state={'socket':connection,'ready':threading.Event(),'gate':HTTPGate(message['host']),
+                   'request':bytearray(),'outbound':queue.Queue(maxsize=64)}
+            with self.lock:
+                if self.closed or cid not in self.connections:
+                    if connection is not None:
+                        connection.close()
+                    return
+                self.connections[cid]=state
+            self.send({'op':'opened','id':cid})
+            if not state['ready'].wait(30):raise EgressDenied('request headers timed out')
+            with self.lock:
+                if self.connections.get(cid) is not state:return
+            self.forward(cid,state)
+        except (ValueError,OSError,sqlite3.Error):
             with self.lock:
                 self.denied.append(str(message.get('host'))[:253]);self.denied[:]=self.denied[-100:]
         finally:self.close_connection(cid)
@@ -117,9 +179,10 @@ class Relay:
         for state in states.values():
             if state:
                 state['ready'].set()
-                try:state['socket'].shutdown(socket.SHUT_RDWR)
-                except OSError:pass
-                state['socket'].close()
+                if state['socket'] is not None:
+                    try:state['socket'].shutdown(socket.SHUT_RDWR)
+                    except OSError:pass
+                    state['socket'].close()
         if self.process.poll() is None:
             self.process.terminate()
             try:self.process.wait(timeout=10)
