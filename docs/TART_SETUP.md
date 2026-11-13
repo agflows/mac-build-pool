@@ -171,6 +171,21 @@ forward backend secrets, signing credentials or host environment variables.
 
 ## Acceptance evidence
 
+On November 13, 2026, the warmed 8 GiB Tart base completed fresh watchOS
+and iOS leases in 151 and 160–163 seconds from lease request to ready.
+The initial iPhone warmup took 19 minutes on that run. The watchOS job
+`5252f2efae1e4a95` returned a 12,329-byte PNG. The final iOS job
+`2cf3438c05e44812` returned a 583,010-byte PNG, then exercised tap
+(`41bb2078649d4ba2`), drag (`4397f4e285004c61`) and pinch
+(`f95ec82161384569`) through the leased API. A UIKit fixture logged the
+corresponding gestures, and its final PNG had SHA-256
+`e4e799f81ae3be851490ac9fec9a97bbf3f9ff4c9063646c872f27b506d0c8af`.
+The preserved HappierCouple Release app also installed and launched
+without compiling and accepted tap, drag, pinch, Home and Lock.
+Both validation leases were released. This was the private Tailscale
+trial, with signing and USB disabled.
+
+
 Run the unit suite, then record actual Mac image/toolchain/source versions,
 API job IDs and screenshot bytes. Use the real CoupleApp Release build with an
 embedded bundle, the Swift fixture with its pinned package/XCTest target, and a
