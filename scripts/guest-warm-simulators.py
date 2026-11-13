@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import pwd
 from pathlib import Path
@@ -13,12 +12,6 @@ from uuid import UUID
 
 SIMCTL = ['/usr/bin/xcrun', 'simctl']
 DATA_ROOT = Path('/Library/ios-worker/data')
-
-
-def device_states(devices):
-    listing = json.loads(subprocess.check_output([*SIMCTL, 'list', 'devices', '-j'], timeout=90))
-    return {item['udid']: item['state'] for group in listing['devices'].values()
-            for item in group if item['udid'] in devices and item.get('isAvailable')}
 
 
 def main():
@@ -33,9 +26,6 @@ def main():
         path = DATA_ROOT / directory
         if path.exists() and any(path.iterdir()):
             raise SystemExit('Simulator warmup requires a project-free provisioning guest.')
-    states = device_states(devices)
-    if set(states) != set(devices):
-        raise SystemExit('A provisioned simulator is unavailable.')
     started = time.monotonic()
     for device in devices:
         print(f'Warming simulator {device}', flush=True)
