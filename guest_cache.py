@@ -1,6 +1,7 @@
 """Transfer simulator app bundles only inside the isolated guest."""
 from __future__ import annotations
 
+import gzip
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -11,6 +12,12 @@ import tempfile
 
 ROOT = '/Library/ios-worker'
 MAX_BYTES = 512 * 1024 * 1024
+
+
+def archive_app(app, stream):
+    with gzip.GzipFile(fileobj=stream, mode='wb', compresslevel=3) as compressed:
+        with tarfile.open(fileobj=compressed, mode='w|') as archive:
+            archive.add(app, arcname='Cached.app')
 
 
 def restore(stream, root):
@@ -84,8 +91,7 @@ def main():
         app = _find_app(derived, require_configuration(configuration), cfg.device_platforms.get(device, 'iOS'))
         require_under(app, derived)
         _bundle_id(app)
-        with tarfile.open(fileobj=sys.stdout.buffer, mode='w|gz', compresslevel=3) as archive:
-            archive.add(app, arcname='Cached.app')
+        archive_app(app, sys.stdout.buffer)
     elif command == 'restore':
         with tempfile.TemporaryDirectory(dir=cfg.workspace_root) as temporary:
             app = restore(sys.stdin.buffer, Path(temporary))

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from cache_http import cache_key, capture
-from guest_cache import restore
+from guest_cache import archive_app, restore
 from worker_cache import CacheFull, WorkerCache
 
 
@@ -85,6 +85,22 @@ class CacheTest(unittest.TestCase):
         self.assertIsNone(cache_key('registry.npmjs.org', request+b'Authorization: Bearer x\r\n'))
         self.assertIsNone(cache_key('registry.npmjs.org', request+b'Range: bytes=0-1\r\n'))
         self.assertIsNone(cache_key('app.example.com', request))
+
+    def test_guest_bundle_archive_can_be_restored(self):
+        root = self.root.parent.resolve()
+        original = root / 'Original.app'
+        original.mkdir()
+        executable = original / 'Original'
+        executable.write_bytes(b'executable')
+        executable.chmod(0o755)
+        (original / 'Alias').symlink_to('Original')
+        data = io.BytesIO()
+        archive_app(original, data)
+        data.seek(0)
+        restored = restore(data, root / 'restored')
+        self.assertEqual((restored / 'Alias').readlink(), Path('Original'))
+        self.assertEqual((restored / 'Original').read_bytes(), b'executable')
+        self.assertEqual((restored / 'Original').stat().st_mode & 0o777, 0o700)
 
     def test_guest_rejects_escaping_archive_member(self):
         with tempfile.TemporaryDirectory() as temporary:
