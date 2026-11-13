@@ -29,10 +29,10 @@ from policy import require_id, check_device, PolicyError
 from tart_lease import OfflineTart, LeaseController, LeaseError
 from vm_transport import communicate, read_frame
 
-ALLOWED_OPS = frozenset({'vm_start','prepare','build','launch','uitest','screenshot','logs','reset','boot','booted','shutdown'})
+ALLOWED_OPS = frozenset({'vm_start','prepare','build','launch','uitest','screenshot','logs','reset','boot','booted','shutdown','input'})
 PERSONAL = '4D015300-4BAE-4E6D-89C9-BC4D454E4216'
 FIELDS = frozenset({'op','lease_id','ttl','job_id','revision_id','session_id','device_id','scheme','recipe',
-                    'public_env','configuration','for_testing','artifact_id','source_base64','approved'})
+                    'public_env','configuration','for_testing','artifact_id','source_base64','approved','input_action'})
 
 STOP_GUEST_SIMULATORS = b"""
 import json

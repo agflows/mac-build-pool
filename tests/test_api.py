@@ -114,6 +114,23 @@ class ApiTest(unittest.TestCase):
         status, _payload = self._request("GET", "/v1/artifacts/..%2F..%2Fetc%2Fpasswd")
         self.assertEqual(status, 400)
 
+    def test_simulator_input_targets_the_leased_device_and_rejects_overrides(self):
+        lease = self.scheduler.acquire_lease()
+        self.scheduler.revisions["test"] = {"status": "ready"}
+        _, session = self.scheduler.submit_launch("test", None, lease)
+        path = f"/v1/sessions/{session}/input"
+        for action in ({"action": "tap", "x": True, "y": 3},
+                       {"action": "button", "button": "lock", "udid": PERSONAL},
+                       {"action": "shell", "command": "id"}):
+            self.assertEqual(self._request("POST", path, json.dumps(action).encode())[0], 400)
+        action = {"action": "pinch", "scale": 1.5}
+        status, payload = self._request("POST", path, json.dumps(action).encode())
+        self.assertEqual(status, 202)
+        job = self.scheduler.get(json.loads(payload)["jobId"])
+        self.assertEqual((job.device_id, job.lease_id, job.input_action), (WORKER, lease, action))
+        self.scheduler.release_lease(lease)
+        self.assertNotEqual(self._request("POST", path, json.dumps(action).encode())[0], 202)
+
     def test_personal_simulator_is_forbidden(self) -> None:
         body = json.dumps({"revisionId": "rev0001", "deviceId": PERSONAL}).encode()
         status, payload = self._request("POST", "/v1/sessions", body)

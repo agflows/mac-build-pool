@@ -1,4 +1,9 @@
 {
+  "axe": {
+    "version": "2.0.4",
+    "url": "https://github.com/cameroncooke/AXe/releases/download/v2.0.4/AXe-macOS-v2.0.4-universal.tar.gz",
+    "sha256": "3178ec66d9ff46455fec737debad719c41cab16edb1435b2c721e07760a208c3"
+  },
   "tart": {
     "version": "2.41.1",
     "url": "https://github.com/cirruslabs/tart/releases/download/2.41.1/tart.tar.gz",

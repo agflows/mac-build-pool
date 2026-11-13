@@ -7,6 +7,7 @@ They never name a host path or a shell command.
 from __future__ import annotations
 
 import re
+import math
 from pathlib import Path
 
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -17,6 +18,59 @@ SCHEME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_+.\-]{0,63}$")
 
 # Leo's booted iPhone 17. Shutdown of this device is never a scheduler action.
 BUILTIN_PERSONAL_DEVICES = frozenset({"4D015300-4BAE-4E6D-89C9-BC4D454E4216"})
+
+
+def simulator_input(body):
+    """Translate a bounded input request to AXe arguments, without target selection."""
+    def invalid():
+        return PolicyError("invalid_body", "Invalid simulator input action or parameters.")
+
+    if not isinstance(body, dict) or not isinstance(body.get("action"), str):
+        raise invalid()
+    action = body["action"]
+    schemas = {
+        "tap": (["tap"], {"x": "-x", "y": "-y"}, {"hold": "--hold", "count": "--count"}),
+        "swipe": (["swipe"], {"x": "--start-x", "y": "--start-y", "endX": "--end-x", "endY": "--end-y"}, {"duration": "--duration"}),
+        "drag": (["drag"], {"x": "--start-x", "y": "--start-y", "endX": "--end-x", "endY": "--end-y"}, {"duration": "--duration", "hold": "--hold"}),
+        "pinch": (["gesture", "pinch"], {"scale": "--scale"}, {"x": "-x", "y": "-y", "radius": "--radius"}),
+        "rotate": (["gesture", "rotate"], {"x": "-x", "y": "-y", "radius": "--radius", "degrees": "--degrees"}, {}),
+        "describe": (["describe-ui"], {}, {}),
+        "displays": (["displays"], {}, {}),
+        "button": (["button"], {"button": None}, {"duration": "--duration"}),
+        "key": (["key"], {"code": None}, {"duration": "--duration"}),
+        "type": (["type", "--"], {"text": None}, {}),
+    }
+    if action not in schemas:
+        raise invalid()
+    command, required, optional = schemas[action]
+    keys = set(body) - {"action"}
+    if not set(required) <= keys <= set(required) | set(optional):
+        raise invalid()
+    if action == "pinch" and ("x" in keys) != ("y" in keys):
+        raise invalid()
+    ranges = {"hold": (0.01, 10), "duration": (0.01, 10), "radius": (1, 4096),
+              "scale": (0.1, 10), "degrees": (-360, 360), "count": (1, 2), "code": (0, 255)}
+    for key, flag in {**required, **optional}.items():
+        if key not in body:
+            continue
+        value = body[key]
+        if key == "button":
+            if value not in ("home", "lock", "side-button", "siri", "apple-pay"):
+                raise invalid()
+        elif key == "text":
+            if not isinstance(value, str) or not value or len(value) > 256 or any(
+                    not (32 <= ord(char) <= 126 or char in "\n\t") for char in value):
+                raise invalid()
+        else:
+            low, high = ranges.get(key, (0, 8192))
+            if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
+                raise invalid()
+            if (key in ("count", "code") and type(value) is not int) or (key == "scale" and value == 1):
+                raise invalid()
+        if flag:
+            command.append(flag)
+        command.append(str(value))
+    return command
 
 
 class PolicyError(Exception):

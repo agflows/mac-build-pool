@@ -47,6 +47,7 @@ class Job:
     configuration: str = "Debug"
     for_testing: bool = True
     approved: bool = False
+    input_action: Optional[dict] = None
     followup_id: Optional[str] = None
     error: Optional[str] = None
     exit_code: Optional[int] = None
@@ -260,6 +261,15 @@ class Scheduler:
             self._require_lease_locked(session["lease_id"])
         return self._enqueue(job)
 
+    def submit_input(self, session_id: str, action: dict) -> Job:
+        session = self._session(session_id)
+        with self._lock:
+            self._require_lease_locked(session["lease_id"])
+            self._device(session["device_id"])
+        return self._enqueue(Job(id=_new_id(), kind="input", session_id=session_id,
+                                 device_id=session["device_id"], lease_id=session["lease_id"],
+                                 input_action=dict(action)))
+
     def submit_uitest(self, revision_id: str, scheme: Optional[str], device_id: Optional[str], lease_id: str, configuration: str = "Debug") -> Job:
         if scheme is not None:
             require_scheme(scheme)
@@ -441,7 +451,7 @@ class Scheduler:
             job.status = "failed"
             job.error = "session released"
             return "skip"
-        if job.kind in ("screenshot", "logs"):
+        if job.kind in ("screenshot", "logs", "input"):
             ready = self._session_ready(job.session_id)
             if ready == "missing":
                 job.status = "failed"
@@ -650,6 +660,7 @@ class Scheduler:
             configuration=job.configuration,
             for_testing=job.for_testing,
             approved=job.approved,
+            input_action=dict(job.input_action) if job.input_action is not None else None,
             followup_id=job.followup_id,
             error=job.error,
             exit_code=job.exit_code,

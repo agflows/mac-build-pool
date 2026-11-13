@@ -147,6 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
     shot = sub.add_parser("screenshot")
     shot.add_argument("session")
     shot.add_argument("--output", required=True)
+    simulator = sub.add_parser("input", help="Send a JSON simulator action to a leased iOS session")
+    simulator.add_argument("session")
+    simulator.add_argument("action", help='JSON object, for example {"action":"tap","x":100,"y":200}')
     status = sub.add_parser("status")
     status.add_argument("job")
     logs = sub.add_parser("logs")
@@ -216,6 +219,16 @@ def main(argv: list[str]) -> int:
         if status != 202:
             return 1
         job = wait_job(args.url, token, payload["jobId"])
+        return 0 if job.get("status") == "succeeded" else 1
+    elif args.command == "input":
+        status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/input", args.action.encode())
+        payload = print_json(raw)
+        if status != 202:
+            return 1
+        job = wait_job(args.url, token, payload["jobId"])
+        status, raw = call(args.url, token, "GET", f"/v1/jobs/{payload['jobId']}/logs")
+        if status == 200:
+            print(json.loads(raw).get("log", ""))
         return 0 if job.get("status") == "succeeded" else 1
     elif args.command == "screenshot":
         status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/screenshot", b"{}")

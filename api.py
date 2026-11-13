@@ -17,6 +17,7 @@ from urllib.parse import unquote, urlsplit
 from containment import DISK_BUDGET, MAX_ARTIFACT_BYTES, read_regular_file
 from policy import PolicyError, require_id, require_configuration, require_bool, require_recipe, require_public_env
 from scheduler import QueueFull
+from policy import simulator_input
 
 JSON = "application/json"
 MAX_JSON_BYTES = 1024 * 1024
@@ -234,6 +235,10 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         action = segments[3]
         if method == "POST" and action == "screenshot":
             return 202, job_view(scheduler.submit_screenshot(session_id)), JSON
+        if method == "POST" and action == "input":
+            body = read_json(body)
+            simulator_input(body)
+            return 202, job_view(scheduler.submit_input(session_id, body)), JSON
         if method == "POST" and action == "logs":
             return 202, job_view(scheduler.submit_logs(session_id)), JSON
         if method == "GET" and action == "logs":

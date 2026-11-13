@@ -38,6 +38,28 @@ touching personal apps or simulators.
 Builds have a 45-minute deadline, including Xcode scheme discovery. A timed-out
 command returns its bounded diagnostic output before the controller reaps its guest.
 
+## iOS simulator interaction
+
+For iOS interaction, provision the checksum-pinned AXe archive with
+`scripts/provision-tart.py --axe ARCHIVE`. The agent addresses the session
+returned by `launch` or `lease --simulator`. Input waits for that session
+to be ready and shares the build and simulator queue.
+
+```sh
+python3 cli.py input SESSION '{"action":"displays"}'
+python3 cli.py input SESSION '{"action":"tap","x":120,"y":250,"hold":0.6}'
+python3 cli.py input SESSION '{"action":"drag","x":120,"y":250,"endX":160,"endY":500}'
+python3 cli.py input SESSION '{"action":"pinch","scale":1.5}'
+python3 cli.py input SESSION '{"action":"button","button":"lock"}'
+python3 cli.py screenshot SESSION --output lock-screen.png
+```
+
+Coordinates use logical points. Other actions include `swipe` (same
+coordinates as drag), `rotate` (two-finger rotation with x, y, radius
+and degrees), `describe` (accessibility tree), `type` (US-layout text),
+and `key` (HID code). The button action accepts home, lock, side-button,
+siri and apple-pay.
+
 ## Apple Watch simulators
 
 Use Xcode's complete Apple watchOS 26.5 arm64 `.exportedBundle` with

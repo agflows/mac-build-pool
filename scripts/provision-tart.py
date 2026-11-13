@@ -34,12 +34,13 @@ def main():
     p.add_argument('--runtime',type=Path,required=True)
     p.add_argument('--watch-runtime',type=Path,help='Apple watchOS 26.5 arm64 simulator runtime export')
     p.add_argument('--flutter',type=Path,help='Verified official arm64 Flutter SDK archive')
+    p.add_argument('--axe',type=Path,help='Pinned AXe archive for leased iOS simulator input')
     p.add_argument('--keep-failed',action='store_true',help='Keep only a stopped trusted provisioning guest for diagnosis/resume')
     p.add_argument('--resume',help='Resume the last trusted provisioning guest; never accepts a project lease guest')
     args=p.parse_args()
     source=Path(__file__).resolve().parents[1]
     pins=json.loads(Path(__file__).with_name('toolchain-pins.json').read_text())
-    for name in ('node','bun','flutter'):
+    for name in ('node','bun','flutter','axe'):
         artifact=getattr(args,name)
         if artifact is None:continue
         digest=hashlib.sha256()
@@ -178,6 +179,15 @@ def main():
                 guest(['/usr/bin/sudo','-n','/bin/dd','of=/Library/ios-worker/toolchains/bun','bs=1048576'],data=bun.read('bun-darwin-aarch64/bun'))
             guest(['/usr/bin/sudo','-n','/bin/chmod','755','/Library/ios-worker/toolchains/bun'])
             save_progress('tools')
+        if args.axe and not progress.get('axe'):
+            axe = '/Library/ios-worker/toolchains/axe'
+            guest(['/usr/bin/sudo','-n','/bin/mkdir','-p',axe])
+            guest(['/usr/bin/sudo','-n','/usr/bin/tar','-xzf','-','-C',axe],data=args.axe.read_bytes())
+            guest(['/usr/bin/sudo','-n','/usr/sbin/chown','-R','root:wheel',axe])
+            guest(['/usr/bin/sudo','-n','/usr/bin/find','-P',axe,'!','-type','l','-exec','/bin/chmod','go-w','{}','+'])
+            guest(['/usr/bin/sudo','-n','/usr/bin/codesign','--force','--sign','-',axe+'/axe'])
+            guest(['/usr/bin/sudo','-n','-u','iosagent',axe+'/axe','--version'])
+            save_progress('axe')
         if args.flutter:
             cfg['toolchain']['flutter_sdk']='/Library/ios-worker/toolchains/flutter'
             if not progress.get('flutter'):

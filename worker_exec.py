@@ -29,6 +29,7 @@ from memory import boot_needs_approval, sample_system
 from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_bool, require_configuration, require_recipe, require_public_env
 from tarsafe import extract_source
 from workspace import is_expo_project, is_flutter_project, copy_flutter_sdk, toolchain_paths, workspace_env, preparation_receipt, load_prepared_env
+from policy import simulator_input
 
 install_import_path()
 CONFIG_PATH = LIBRARY_ROOT / "worker.json"
@@ -88,6 +89,8 @@ def perform(request: dict, cfg, commands: Commands, memory=sample_system) -> dic
         return launch(request, cfg, commands, memory)
     if op == "screenshot":
         return screenshot(request, cfg, commands, memory)
+    if op == "input":
+        return send_simulator_input(request, cfg, commands)
     if op == "uitest":
         return uitest(request, cfg, commands, memory)
     if op == "logs":
@@ -251,6 +254,28 @@ def launch(request: dict, cfg, commands: Commands, memory) -> dict:
     _check(install, "install failed")
     launched = commands.run([commands.xcrun, "simctl", "launch", device, bundle], timeout=60)
     return {"ok": True, "log": _check(launched, "launch failed"), "bundle_id": bundle, "exitCode": 0}
+
+
+def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
+    from execution_policy import require_protected_file
+
+    arguments = simulator_input(request.get("input_action"))
+    device = _device(request, cfg)
+    if cfg.device_platforms.get(device, "iOS") != "iOS":
+        raise PolicyError("unsupported_device", "Simulator input currently supports iOS sessions.")
+    axe = LIBRARY_ROOT / "toolchains/axe/axe"
+    if not axe.is_file():
+        raise PolicyError("toolchain_missing", "Install the pinned AXe tool in the reviewed guest image.")
+    require_protected_file(axe, executable=True)
+    if not is_booted(request, cfg, commands):
+        raise PolicyError("simulator_off", "Launch the leased iOS simulator before sending input.")
+    target = ["--udid", device]
+    if arguments[0] == "type":
+        arguments = ["type", *target, *arguments[1:]]
+    else:
+        arguments += target
+    completed = commands.run([str(axe), *arguments], timeout=25)
+    return {"ok": True, "log": _check(completed, "Simulator input failed"), "exitCode": 0}
 
 
 def screenshot(request: dict, cfg, commands: Commands, memory) -> dict:

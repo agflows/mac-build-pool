@@ -132,6 +132,8 @@ class TartRunner:
         request={'op':job.kind,'job_id':job.id,'lease_id':job.lease_id,
                  **{key:getattr(job,key) for key in ('revision_id','session_id','device_id','scheme','recipe',
                    'public_env','configuration','for_testing','artifact_id','approved')}}
+        if job.kind == 'input':
+            request['input_action'] = job.input_action
         if job.revision_id and job.revision_id not in self.staged and job.kind in {'prepare','build','launch','uitest'}:
             source=self.archives.get(job.revision_id)
             if source is None:
