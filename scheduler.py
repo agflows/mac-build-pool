@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from containment import DISK_BUDGET, LOG_CAP, MAX_ARTIFACT_BYTES, copy_regular_file
 from runner import WorkerFailure
-from memory import PRESSURE_URGENT, PRESSURE_WARNING, MemorySample, boot_needs_approval, build_needs_approval, swap_is_active
+from memory import PRESSURE_URGENT, MemorySample, boot_needs_approval, build_needs_approval
 from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_configuration, require_bool, require_recipe, require_public_env
 
 Clock = Callable[[], float]
@@ -400,6 +400,9 @@ class Scheduler:
                     if decision == "wait":
                         job.status = "waiting_for_approval"
                         continue
+                    if decision == "wait_for_pressure":
+                        job.status = "queued"
+                        continue
                     self._start_locked(job)
                     break
             to_shutdown = self._idle_devices_locked()
@@ -412,13 +415,6 @@ class Scheduler:
                 sys.stderr.write("idle shutdown failed: " + exc.__class__.__name__ + "\n")
 
     def _admit(self, job: Job, sample: MemorySample, previous: Optional[MemorySample]) -> str:
-        vm_running = False
-        if getattr(self.runner, "vm_backend", False) and job.kind != "ingest":
-            if sample.pressure_level >= PRESSURE_URGENT:
-                return "wait"
-            vm_running = self.runner.vm_started()
-            if not vm_running and boot_needs_approval(previous, sample, job.approved):
-                return "wait"
         if job.kind in ("prepare", "build", "launch", "uitest"):
             revision = self.revisions.get(job.revision_id or "")
             if revision is None:
@@ -457,14 +453,15 @@ class Scheduler:
                 return "skip"
             if ready != "ready":
                 return "skip"
+        if getattr(self.runner, "vm_backend", False):
+            if job.kind != "ingest":
+                if sample.pressure_level >= PRESSURE_URGENT:
+                    return "wait_for_pressure"
+                # The guest's simulator startup uses the broker's approval flag.
+                job.approved = True
+            return "allow"
         if self._needs_boot(job) and boot_needs_approval(previous, sample, job.approved):
-            if (not vm_running or job.kind not in {"launch", "boot"}
-                    or sample.pressure_level != PRESSURE_WARNING or swap_is_active(previous, sample)):
-                return "wait"
-            # The already-running guest also uses an approval flag for simulator boot.
-            # Keep this grant with the job and retain the notice until the lease ends.
-            job.approved = True
-            self.lease["memoryWarningJobId"] = job.id
+            return "wait"
         if job.kind in ("prepare", "build", "uitest") and build_needs_approval(previous, sample, job.approved):
             return "wait"
         return "allow"

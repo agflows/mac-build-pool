@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from memory import PRESSURE_NORMAL, PRESSURE_URGENT, PRESSURE_WARNING, MemorySample
 from policy import PolicyError, check_device
-from scheduler import QueueFull, Scheduler
+from scheduler import Job, QueueFull, Scheduler
 
 WORKER = "3C8BB98E-6383-446B-AF87-1E1282762A13"
 PERSONAL = "4D015300-4BAE-4E6D-89C9-BC4D454E4216"
@@ -183,31 +183,26 @@ class SchedulerTest(unittest.TestCase):
         self.runner.vm_backend = True
         job.approved = True
         sample = MemorySample(PRESSURE_URGENT, 0, 0)
-        self.assertEqual(self.scheduler._admit(job, sample, None), "wait")
+        self.assertEqual(self.scheduler._admit(job, sample, None), "wait_for_pressure")
 
-    def test_running_tart_guest_launches_at_warning_and_records_a_notice(self):
+    def test_tart_launch_is_automatically_approved_at_warning_pressure(self):
         lease = self._lease()
         job, _ = self.scheduler.submit_launch(self._ready(), None, lease)
         self.runner.vm_backend = True
-        self.runner.vm_started = lambda: True
         self.memory.sample = MemorySample(PRESSURE_WARNING, 0, 0)
         self.scheduler.step()
         self._wait_idle(job.id)
         self.assertEqual(self.scheduler.get(job.id).status, "succeeded")
         self.assertTrue(self.scheduler.get(job.id).approved)
-        self.assertEqual(self.scheduler.lease["memoryWarningJobId"], job.id)
 
-    def test_warning_still_holds_a_fresh_tart_guest_or_active_paging(self):
+    def test_tart_admits_vm_start_at_warning_even_during_active_paging(self):
         lease = self._lease()
-        job, _ = self.scheduler.submit_launch(self._ready(), None, lease)
+        job = Job(id="vmstart", kind="vm_start", lease_id=lease)
         self.runner.vm_backend = True
-        self.runner.vm_started = lambda: False
         before = MemorySample(PRESSURE_WARNING, 0, 0)
-        self.assertEqual(self.scheduler._admit(job, before, None), "wait")
-        self.runner.vm_started = lambda: True
         paging = MemorySample(PRESSURE_WARNING, 0, 256)
-        self.assertEqual(self.scheduler._admit(job, paging, before), "wait")
-        self.assertNotIn("memoryWarningJobId", self.scheduler.lease)
+        self.assertEqual(self.scheduler._admit(job, paging, before), "allow")
+        self.assertTrue(job.approved)
 
     def test_small_swap_delta_still_boots(self) -> None:
         self.memory.sample = MemorySample(PRESSURE_NORMAL, 1000, 1000)

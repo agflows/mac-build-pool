@@ -1,6 +1,5 @@
 import AppKit
 import Darwin
-import UserNotifications
 
 private struct OwnerReply: Decodable {
     let ok: Bool
@@ -9,7 +8,6 @@ private struct OwnerReply: Decodable {
     let leaseId: String?
     let waitingJobId: String?
     let waitingJobKind: String?
-    let memoryWarningJobId: String?
     let diskBytes: Int64?
     let memoryBytes: Int64?
     let memoryMetric: String?
@@ -77,9 +75,7 @@ private func request(_ operation: String, lease: String? = nil, job: String? = n
     return nil
 }
 
-final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
-    private static let memoryCategory = "worker-memory-warning"
-    private static let stopAction = "stop-worker-session"
+final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let state = NSMenuItem()
     private let session = NSMenuItem()
@@ -92,16 +88,8 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     private var waitingJob: String?
     private var busy = false
     private var timer: Timer?
-    private var lastMemoryWarning: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let notifications = UNUserNotificationCenter.current()
-        notifications.delegate = self
-        let stop = UNNotificationAction(identifier: Self.stopAction, title: "Stop Session", options: [.destructive])
-        notifications.setNotificationCategories([
-            UNNotificationCategory(identifier: Self.memoryCategory, actions: [stop], intentIdentifiers: [])
-        ])
-        notifications.requestAuthorization(options: [.alert]) { _, _ in }
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
@@ -134,7 +122,6 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let status = reply?.state ?? "Worker offline"
         state.title = status
         lease = reply?.leaseId
-        showMemoryWarning(reply)
         waitingJob = reply?.waitingJobId
         approve.isHidden = waitingJob == nil
         approve.isEnabled = waitingJob != nil && lease != nil && !busy
@@ -161,40 +148,6 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let symbol = lease == nil ? "hammer" : "hammer.fill"
         statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Mac Build Pool, \(status)")
         statusItem.button?.toolTip = "Mac Build Pool — \(status)"
-    }
-
-    private func showMemoryWarning(_ reply: OwnerReply?) {
-        guard let lease = reply?.leaseId, let job = reply?.memoryWarningJobId else { return }
-        let identifier = "memory-warning-\(lease)-\(job)"
-        guard lastMemoryWarning != identifier else { return }
-        lastMemoryWarning = identifier
-        let content = UNMutableNotificationContent()
-        content.title = "Mac memory pressure is high"
-        content.body = "The simulator is starting in the build VM. Stop the session to shut down the VM and discard its build files."
-        content.categoryIdentifier = Self.memoryCategory
-        content.userInfo = ["leaseId": lease]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
-    }
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
-                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .list])
-    }
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
-                                withCompletionHandler completionHandler: @escaping () -> Void) {
-        guard response.actionIdentifier == Self.stopAction,
-              let lease = response.notification.request.content.userInfo["leaseId"] as? String else {
-            completionHandler()
-            return
-        }
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            _ = request("release", lease: lease)
-            DispatchQueue.main.async { [weak self] in
-                self?.refresh()
-                completionHandler()
-            }
-        }
     }
 
     private func format(_ bytes: Int64?, style: ByteCountFormatter.CountStyle) -> String {
