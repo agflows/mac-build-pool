@@ -7,6 +7,7 @@ acceptance report is checked by --activate.
 """
 from __future__ import annotations
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -125,11 +126,34 @@ def launch(plist,label,data):
     run(['/bin/launchctl','enable','system/'+label],False)
 
 
+def clone_base(base, target):
+    """Require a same-volume copy-on-write clone of the large disk."""
+    disk = base / 'disk.img'
+    if disk.is_symlink() or not disk.is_file():
+        raise SystemExit('Reviewed base disk is missing or unsafe')
+    target.mkdir(mode=0o700)
+    try:
+        clonefile = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True).clonefile
+        clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        clonefile.restype = ctypes.c_int
+        if clonefile(os.fsencode(disk), os.fsencode(target / 'disk.img'), 0):
+            reason = os.strerror(ctypes.get_errno())
+            raise SystemExit(f'Cannot clone the worker disk ({reason}). Keep the base and worker on the same APFS volume.')
+        for name in ('config.json', 'nvram.bin'):
+            item = base / name
+            if item.is_symlink() or not item.is_file():
+                raise SystemExit(f'Reviewed base is missing a regular {name}')
+            shutil.copy2(item, target / name)
+    except BaseException:
+        shutil.rmtree(target)
+        raise
+
+
 def install_base(base, target, *, replace):
     if target.is_symlink():
         raise SystemExit('Unexpected controller base symlink')
     if not target.exists():
-        run(['/bin/cp','-cRp',str(base),str(target)])
+        clone_base(base,target)
         return
     if any(path.is_symlink() or not path.is_file()
            for path in (target/'disk.img',target/'config.json')):
@@ -148,7 +172,7 @@ def install_base(base, target, *, replace):
     previous=staging/'previous'
     promoted=False
     try:
-        run(['/bin/cp','-cRp',str(base),str(candidate)])
+        clone_base(base,candidate)
         target.rename(previous)
         try:
             candidate.rename(target)

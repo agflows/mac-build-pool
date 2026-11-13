@@ -262,6 +262,11 @@ def main():
         (args.output/'toolchain.json').write_text(versions)
         (args.output/'guest-device.txt').write_text(device+'\n')
         if relay:relay.close();relay=None
+        print('Initializing the empty worker simulators before saving the base',flush=True)
+        guest(['/usr/bin/sudo','-n','-u','iosagent','/usr/bin/python3','-I','-',*cfg['device_allowlist']],
+              data=(source/'scripts/guest-warm-simulators.py').read_bytes(),timeout=3000)
+        if bad_pressure.is_set():
+            raise RuntimeError('Host resource admission stopped simulator warmup')
         # Produce a clean pristine image, never a post-project VM snapshot.
         # The agent may disconnect as shutdown begins; only the verified stopped
         # Tart process below determines whether the image can be promoted.

@@ -65,12 +65,8 @@ class ActivationTest(unittest.TestCase):
                 self.installer.install_base(new, target, replace=True)
             lease.rmdir()
 
-            def command(argv, check=True):
-                if argv[0] == '/bin/cp':
-                    shutil.copytree(argv[-2], argv[-1])
-                return SimpleNamespace(returncode=int(argv[0] == '/bin/launchctl'))
-
-            with patch.object(self.installer, 'run', side_effect=command):
+            with patch.object(self.installer, 'run', return_value=SimpleNamespace(returncode=1)), \
+                 patch.object(self.installer, 'clone_base', side_effect=shutil.copytree):
                 self.installer.install_base(new, target, replace=True)
             self.assertEqual((target / 'disk.img').read_bytes(), b'new image')
             self.assertEqual(list(target.parent.iterdir()), [target])

@@ -16,7 +16,9 @@ admission. `bootSimulator: true` also starts the guest's mapped simulator and
 returns a session ID for screenshots and logs without a project build. A lease
 lasts at most 300 seconds per renewal, with a two-hour absolute limit. Renew while
 working or interacting with the simulator; job completion alone does not end a
-lease. Release or expiry stops and deletes its disposable APFS clone. An expired
+lease. Each guest starts from the reviewed base with migrated simulator data.
+APFS clones on the same volume share unchanged disk blocks. Lease writes use
+additional storage, and release or expiry stops and deletes the clone. An expired
 lease cannot be revived. Daemon restart reaps only its own `lease-*` guests.
 
 Only the small broker/controller remains while idle. The guest sees a fixed
@@ -125,8 +127,12 @@ identity data and receives no developer or personal keys.
 pinned macOS image, copying the owner's independent local Xcode installation and
 simulator runtime as data. `scripts/provision-tart.py` performs trusted image
 maintenance, creates the guest job account, replaces public image credentials,
-installs the restricted relay/tools, creates a fresh simulator and shuts down
-before promoting `worker-base`. Never promote a guest after running projects.
+installs the restricted relay/tools, and initializes the empty worker iPhone
+and paired Watch (when provisioned). It waits for migration, shuts the devices
+down and powers off the guest before promoting `worker-base`. Migrated device
+data lives directly in that image. There is no second simulator disk or saved
+RAM image. Warm up again when replacing the Xcode or simulator runtimes. Never
+promote a guest after running projects.
 
 Keep image/runtime/provisioning outputs in an owner-private persistent directory,
 not a shared temporary checkout. The reviewed root installer stages a separate
@@ -136,6 +142,8 @@ native helper/sudo grant. Do not stop an occupied broker or overwrite a live
 controller. Root-owned code and image identity checks fail closed after changes.
 When a reviewed, project-free image supersedes the installed base, use
 `--replace-base` while the controller is idle and its lease guests are gone.
+Keep the reviewed image and controller on the same APFS volume. Installation
+requires cloning the disk and fails if cloning is unavailable.
 
 The owner can opt in to a single-peer remote trial by adding `--peer-trial`
 after the validation configuration path in its launch arguments. The protected
