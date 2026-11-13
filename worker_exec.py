@@ -227,7 +227,7 @@ def build(request: dict, cfg, commands: Commands) -> dict:
         str(derived),
         *package_args,
         "-jobs",
-        "1",
+        "4",
         "ONLY_ACTIVE_ARCH=YES",
         "COMPILER_INDEX_STORE_ENABLE=NO",
         "CODE_SIGNING_ALLOWED=NO",

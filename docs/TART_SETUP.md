@@ -27,7 +27,8 @@ Stopping the guest releases that memory. The installer defaults to 4 GiB, four
 virtual CPUs and a 100 GB sparse guest disk. Use `--memory-mib 8192` for the
 8 GiB profile. The host and guest each manage swap on their startup disks.
 
-The Tart broker runs one job at a time. The controller shuts down and verifies
+The Tart broker runs one job at a time. Inside a build, Xcode can run up to
+four build operations concurrently. The controller shuts down and verifies
 all guest simulators before preparation or compilation. A build with
 `bootSimulator` enabled queues a separate simulator boot after it succeeds.
 The Tart worker automatically approves VM and simulator startup at warning

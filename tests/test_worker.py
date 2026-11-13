@@ -98,6 +98,8 @@ class WorkerGuardTest(unittest.TestCase):
         )
         flat = [" ".join(argv) for argv in self.commands.calls]
         self.assertTrue(any("build-for-testing" in item and WORKER in item for item in flat))
+        build_argv = next(argv for argv in self.commands.calls if "build-for-testing" in argv)
+        self.assertEqual(build_argv[build_argv.index("-jobs") + 1], "4")
         self.assertTrue(any("CODE_SIGNING_ALLOWED=NO" in item for item in flat))
         self.assertFalse(any(PERSONAL in item or "sandbox-exec" in item for item in flat))
 
