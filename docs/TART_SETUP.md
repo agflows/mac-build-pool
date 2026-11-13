@@ -42,8 +42,11 @@ command returns its bounded diagnostic output before the controller reaps its gu
 
 ## iOS simulator interaction
 
-For iOS interaction, provision the checksum-pinned AXe archive with
-`scripts/provision-tart.py --axe ARCHIVE`. The agent addresses the session
+For iOS interaction, provision the checksum-pinned AXe release and source with
+`scripts/provision-tart.py --axe ARCHIVE --axe-source SOURCE_ARCHIVE`. The
+source archive supplies headers for the pinch helper, which links the pinned
+simulator input framework and uses native portrait coordinates in headless
+guests. The agent addresses the session
 returned by `launch` or `lease --simulator`. Input waits for that session
 to be ready and shares the build and simulator queue.
 

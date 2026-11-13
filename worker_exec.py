@@ -259,7 +259,8 @@ def launch(request: dict, cfg, commands: Commands, memory) -> dict:
 def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
     from execution_policy import require_protected_file
 
-    arguments = simulator_input(request.get("input_action"))
+    action = request.get("input_action")
+    arguments = simulator_input(action)
     device = _device(request, cfg)
     if cfg.device_platforms.get(device, "iOS") != "iOS":
         raise PolicyError("unsupported_device", "Simulator input currently supports iOS sessions.")
@@ -269,12 +270,19 @@ def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
     require_protected_file(axe, executable=True)
     if not is_booted(request, cfg, commands):
         raise PolicyError("simulator_off", "Launch the leased iOS simulator before sending input.")
-    target = ["--udid", device]
-    if arguments[0] == "type":
-        arguments = ["type", *target, *arguments[1:]]
+    pinch = axe.with_name("simulator-pinch")
+    if action["action"] == "pinch" and pinch.is_file():
+        require_protected_file(pinch, executable=True)
+        coordinates = [str(action.get(key, "-")) for key in ("x", "y", "radius")]
+        argv = [str(pinch), device, str(action["scale"]), *coordinates]
     else:
-        arguments += target
-    completed = commands.run([str(axe), *arguments], timeout=25)
+        target = ["--udid", device]
+        if arguments[0] == "type":
+            arguments = ["type", *target, *arguments[1:]]
+        else:
+            arguments += target
+        argv = [str(axe), *arguments]
+    completed = commands.run(argv, timeout=25)
     return {"ok": True, "log": _check(completed, "Simulator input failed"), "exitCode": 0}
 
 

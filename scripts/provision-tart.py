@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import tempfile
 import time
 import zipfile
 import hashlib
@@ -35,12 +36,15 @@ def main():
     p.add_argument('--watch-runtime',type=Path,help='Apple watchOS 26.5 arm64 simulator runtime export')
     p.add_argument('--flutter',type=Path,help='Verified official arm64 Flutter SDK archive')
     p.add_argument('--axe',type=Path,help='Pinned AXe archive for leased iOS simulator input')
+    p.add_argument('--axe-source',type=Path,help='Pinned source archive for the headless iOS pinch helper')
     p.add_argument('--keep-failed',action='store_true',help='Keep only a stopped trusted provisioning guest for diagnosis/resume')
     p.add_argument('--resume',help='Resume the last trusted provisioning guest; never accepts a project lease guest')
     args=p.parse_args()
+    if args.axe_source and not args.axe:
+        p.error('--axe-source requires --axe')
     source=Path(__file__).resolve().parents[1]
     pins=json.loads(Path(__file__).with_name('toolchain-pins.json').read_text())
-    for name in ('node','bun','flutter','axe'):
+    for name in ('node','bun','flutter','axe','axe_source'):
         artifact=getattr(args,name)
         if artifact is None:continue
         digest=hashlib.sha256()
@@ -190,6 +194,30 @@ def main():
                    'import os,sys;os.chdir("/private/tmp");os.execv(sys.argv[1],sys.argv[1:])',
                    axe+'/axe','--version'])
             save_progress('axe')
+        if args.axe_source and not progress.get('simulator_pinch'):
+            axe = '/Library/ios-worker/toolchains/axe'
+            with tempfile.TemporaryDirectory(prefix='axe-headers-') as temporary:
+                source_prefix = f"AXe-{pins['axe_source']['revision']}/Packages/IDBKit/PrivateHeaders"
+                subprocess.run(['/usr/bin/tar','-xzf',str(args.axe_source),'-C',temporary,
+                                '--strip-components','3',source_prefix],check=True,timeout=120)
+                headers = io.BytesIO()
+                with tarfile.open(fileobj=headers,mode='w:gz') as archive:
+                    archive.add(Path(temporary)/'PrivateHeaders',arcname='PrivateHeaders')
+                build = '/Library/ios-worker/toolchains/axe-build'
+                guest(['/usr/bin/sudo','-n','/bin/mkdir','-p',build])
+                try:
+                    guest(['/usr/bin/sudo','-n','/usr/bin/tar','-xzf','-','-C',build],data=headers.getvalue())
+                    guest(['/usr/bin/sudo','-n','/bin/dd','of='+build+'/simulator-pinch.swift'],
+                          data=(source/'scripts/simulator-pinch.swift').read_bytes())
+                    guest(['/usr/bin/sudo','-n','/usr/bin/xcrun','swiftc','-parse-as-library',
+                           '-module-cache-path',build+'/modules','-I',build+'/PrivateHeaders',
+                           '-F',axe+'/Frameworks','-F','/Library/Developer/PrivateFrameworks',
+                           '-framework','FBControlCore','-framework','FBSimulatorControl',
+                           '-Xlinker','-rpath','-Xlinker',axe+'/Frameworks',build+'/simulator-pinch.swift',
+                           '-o',axe+'/simulator-pinch'],timeout=180)
+                finally:
+                    guest(['/usr/bin/sudo','-n','/bin/rm','-rf',build])
+            save_progress('simulator_pinch')
         if args.flutter:
             cfg['toolchain']['flutter_sdk']='/Library/ios-worker/toolchains/flutter'
             if not progress.get('flutter'):
