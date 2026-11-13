@@ -8,6 +8,8 @@ import DequeModule
 
 struct ProbeView: View {
     @StateObject private var model = ProbeModel()
+    @State private var email = ""
+    @State private var submitted = false
     var body: some View {
         VStack(spacing: 24) {
             Image(systemName: "checkmark.shield.fill").font(.system(size: 64)).foregroundStyle(.green)
@@ -15,6 +17,19 @@ struct ProbeView: View {
             Text(Deque(["Swift", "pinned package"]).joined(separator: " + "))
             Text(model.network)
             Text(model.isolation)
+            TextField("Email", text: $email)
+                .textFieldStyle(.roundedBorder)
+                .textContentType(.emailAddress)
+                .keyboardType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("probe.email")
+            Button("Continue") {
+                submitted = email == "simulator+test@example.test"
+            }.accessibilityIdentifier("probe.continue")
+            if submitted {
+                Text("Email entry verified")
+            }
         }.padding().task { await model.run() }
     }
 }

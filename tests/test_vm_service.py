@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 import base64
 import hashlib
+import io
+import tarfile
 import subprocess
 import hashlib
 from pathlib import Path
@@ -215,6 +217,24 @@ class VMServiceTest(unittest.TestCase):
 
 
 class GuestSimulatorTest(unittest.TestCase):
+    def test_guest_payload_is_a_fixed_archive_of_reviewed_modules(self):
+        from vm_service import GUEST_PAYLOAD
+        backend = Mock()
+        backend.binary = '/tart'
+        backend.base_identity = {'size': 0}
+        backend.env = {}
+        backend.lock = threading.RLock()
+        backend.cancelled = set()
+        with patch('vm_service.require_protected_file') as protected, \
+                patch('vm_service.communicate', return_value=(0, b'', b'')) as transfer:
+            BuildTart.install_guest_payload(backend, 'lease-test')
+        argv, data = transfer.call_args.args
+        self.assertEqual(argv[-5:], ['/usr/bin/tar', '-xf', '-', '-C', '/Library/ios-worker'])
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertEqual(archive.getnames(), list(GUEST_PAYLOAD))
+            self.assertTrue(all(member.isfile() and member.mode == 0o644 for member in archive))
+        self.assertEqual(protected.call_count, len(GUEST_PAYLOAD))
+
     def test_preview_validation_binds_bytes_to_frame_id(self):
         raw = b"\xff\xd8\xffexample\xff\xd9"
         frame_id = hashlib.sha256(raw).hexdigest()
