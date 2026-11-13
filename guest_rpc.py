@@ -88,12 +88,14 @@ def input_loop():
             raise ValueError('invalid simulator request')
         job = require_id(request['job_id'], 'job')
         started = time.monotonic()
+        commands.command_seconds = 0.0
         try:
             result = perform(request, cfg, commands, sample_system)
         except Exception as exc:
             result = failure(exc)
         result['job_id'] = job
         result['guestMs'] = round(1000 * (time.monotonic() - started))
+        result['guestCommandMs'] = round(1000 * commands.command_seconds)
         reply = json.dumps(result, separators=(',', ':'))
         if len(reply) > INPUT_RESULT_LIMIT - 1:
             raise ValueError('simulator reply exceeds transfer cap')

@@ -55,12 +55,14 @@ class Commands:
         self.xcrun = "/usr/bin/xcrun"
         self.env = worker_child_env(developer_dir)
         self.cwd = Path("/tmp")
+        self.command_seconds = 0.0
 
     def run(self, argv: list, timeout: int, *, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
         if not argv or any(not isinstance(part, str) or "\x00" in part for part in argv):
             raise PolicyError("bad_argv", "Command arguments must be strings.")
         if not str(argv[0]).startswith("/"):
             raise PolicyError("bad_argv", "Commands use absolute paths.")
+        started = time.monotonic()
         try:
             return run_contained(
                 list(argv),
@@ -79,6 +81,8 @@ class Commands:
             if str(exc) == "storage_limit":
                 raise PolicyError("storage_limit", "Worker storage is over the 20 GB budget.") from exc
             raise
+        finally:
+            self.command_seconds += time.monotonic() - started
 
 
 def perform(request: dict, cfg, commands: Commands, memory=sample_system) -> dict:

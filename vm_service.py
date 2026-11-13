@@ -264,9 +264,12 @@ class BuildTart(OfflineTart):
         reply.pop('job_id')
         controller_ms = round(1000 * (time.monotonic() - started))
         guest_ms = reply.pop('guestMs', None)
+        guest_command_ms = reply.pop('guestCommandMs', None)
         reply['simulatorTiming'] = {'controllerMs': controller_ms}
         if type(guest_ms) is int and 0 <= guest_ms <= 110000:
             reply['simulatorTiming']['guestMs'] = guest_ms
+            if type(guest_command_ms) is int and 0 <= guest_command_ms <= guest_ms:
+                reply['simulatorTiming']['guestCommandMs'] = guest_command_ms
         return reply
 
 
