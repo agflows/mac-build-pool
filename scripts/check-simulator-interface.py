@@ -102,6 +102,7 @@ def main():
         repeated = interact(session, typed, request_id=request_id)
         assert first["jobId"] == repeated["jobId"]
         assert "capture" not in first["simulatorUI"]
+        assert first["simulatorTiming"]["controllerMs"] >= first["simulatorTiming"]["guestMs"]
         result = interact(session, {"action": "tapMatching", "identifier": "probe.continue"})
         assert any("Email entry verified" in row for row in result["simulatorUI"]["capture"]["rows"])
         stale = interact(session, {"action": "tapElement", "snapshotId": capture["snapshotID"],
@@ -111,6 +112,10 @@ def main():
         }
         frame = interact(session, {"action": "preview"})["simulatorPreview"]
         (args.output / "preview.jpg").write_bytes(base64.b64decode(frame["jpegBase64"], validate=True))
+        invalid = {"requestId": uuid.uuid4().hex,
+                   "input": {"action": "tap", "x": 20, "y": 20, "udid": "caller-controlled"}}
+        assert request("POST", f"/v1/sessions/{session}/interact", invalid, accepted=(400,))["error"] == "invalid_body"
+        assert request("POST", "/v1/leases", {}, accepted=(409,))["error"] == "session_busy"
         interact(session, {"action": "button", "button": "home"})
         interact(session, {"action": "button", "button": "lock"})
         shot = wait(request("POST", f"/v1/sessions/{session}/screenshot", {})["jobId"])
