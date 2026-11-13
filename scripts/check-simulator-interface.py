@@ -64,7 +64,7 @@ def main():
             result = wait(result["jobId"], allow_failure=not succeeded)
         evidence["actions"].append({"action": action["action"], "jobId": result["jobId"],
                                     "elapsedMs": round((time.monotonic() - started) * 1000),
-                                    "timing": result.get("simulatorTiming")})
+                                    "timing": result.get("simulatorTiming"), "error": result.get("error")})
         if succeeded and result["status"] != "succeeded":
             raise RuntimeError(f"{action['action']} failed: {result.get('error')}")
         return result
@@ -93,23 +93,28 @@ def main():
         launch = request("POST", "/v1/sessions", {key: build[key] for key in ("revisionId", "leaseId")})
         wait(launch["jobId"])
         session = launch["sessionId"]
-        capture = interact(session, {"action": "snapshot"})["simulatorUI"]["capture"]
-        row = next(row for row in capture["rows"] if row.split("|")[3:4] == ["Email"])
-        typed = {"action": "typeInto", "snapshotId": capture["snapshotID"], "ref": row.split("|")[0],
-                 "focus": True, "text": "simulator+test@example.test"}
-        request_id = uuid.uuid4().hex
-        first = interact(session, typed, request_id=request_id)
-        repeated = interact(session, typed, request_id=request_id)
-        assert first["jobId"] == repeated["jobId"]
-        assert "capture" not in first["simulatorUI"]
-        assert first["simulatorTiming"]["controllerMs"] >= first["simulatorTiming"]["guestMs"]
-        result = interact(session, {"action": "tapMatching", "identifier": "probe.continue"})
-        assert any("Email entry verified" in row for row in result["simulatorUI"]["capture"]["rows"])
-        stale = interact(session, {"action": "tapElement", "snapshotId": capture["snapshotID"],
-                                  "ref": row.split("|")[0]}, succeeded=False)
-        assert stale["status"] == "failed" and stale["error"] in {
-            "screenChanged", "snapshotExpired", "snapshotMissing", "contextChanged",
-        }
+        for attempt in range(4):
+            snapshot = interact(session, {"action": "snapshot"}, succeeded=False)
+            if snapshot["status"] == "succeeded":
+                break
+            time.sleep(1)
+        else:
+            raise RuntimeError(f"AXe snapshot failed after launch: {snapshot.get('error')}")
+        capture = snapshot["simulatorUI"]["capture"]
+        if capture.get("backend") == "legacy":
+            assert any(item["identifier"] == "probe.email" for item in capture["elements"])
+            interact(session, {"action": "tapMatching", "identifier": "probe.email", "backend": "legacy"})
+            request_id = uuid.uuid4().hex
+            typed = {"action": "type", "text": "simulator+test@example.test"}
+            first = interact(session, typed, request_id=request_id)
+            repeated = interact(session, typed, request_id=request_id)
+            assert first["jobId"] == repeated["jobId"]
+            interact(session, {"action": "tapMatching", "identifier": "probe.continue", "backend": "legacy"})
+            verified = interact(session, {"action": "snapshot"})["simulatorUI"]["capture"]
+            assert any(item["label"] == "Email entry verified" for item in verified["elements"])
+        else:
+            check_checked_input(session, capture, interact)
+        evidence["accessibilityBackend"] = capture.get("backend", "checked")
         frame = interact(session, {"action": "preview"})["simulatorPreview"]
         (args.output / "preview.jpg").write_bytes(base64.b64decode(frame["jpegBase64"], validate=True))
         invalid = {"requestId": uuid.uuid4().hex,
@@ -127,6 +132,25 @@ def main():
         stop.set()
         (args.output / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
         request("POST", f"/v1/leases/{lease}/release", {})
+
+
+def check_checked_input(session, capture, interact):
+    row = next(row for row in capture["rows"] if row.split("|")[3:4] == ["Email"])
+    typed = {"action": "typeInto", "snapshotId": capture["snapshotID"], "ref": row.split("|")[0],
+             "focus": True, "text": "simulator+test@example.test"}
+    request_id = uuid.uuid4().hex
+    first = interact(session, typed, request_id=request_id)
+    repeated = interact(session, typed, request_id=request_id)
+    assert first["jobId"] == repeated["jobId"]
+    assert "capture" not in first["simulatorUI"]
+    assert first["simulatorTiming"]["controllerMs"] >= first["simulatorTiming"]["guestMs"]
+    result = interact(session, {"action": "tapMatching", "identifier": "probe.continue"})
+    assert any("Email entry verified" in row for row in result["simulatorUI"]["capture"]["rows"])
+    stale = interact(session, {"action": "tapElement", "snapshotId": capture["snapshotID"],
+                              "ref": row.split("|")[0]}, succeeded=False)
+    assert stale["status"] == "failed" and stale["error"] in {
+        "screenChanged", "snapshotExpired", "snapshotMissing", "contextChanged",
+    }
 
 
 if __name__ == "__main__":

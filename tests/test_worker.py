@@ -134,6 +134,27 @@ class WorkerGuardTest(unittest.TestCase):
         with self.assertRaises(PolicyError):
             simulator_input(action)
 
+    def test_snapshot_uses_read_only_legacy_tree_when_checked_read_is_unavailable(self):
+        self.commands = Mock()
+        rejected = {
+            "schema": "axe.output.agent-result", "schemaVersion": "2", "didError": True,
+            "data": {}, "error": {"code": "observationFailed"},
+        }
+        legacy = {"data": {"result": [{"AXLabel": "Email", "AXUniqueId": "probe.email",
+                                      "AXValue": "private value", "type": "TextField"}]}}
+        self.commands.run.side_effect = [
+            subprocess.CompletedProcess([], 1, json.dumps(rejected).encode(), b""),
+            subprocess.CompletedProcess([], 0, json.dumps(legacy).encode(), b""),
+        ]
+        with patch("pathlib.Path.is_file", return_value=True), patch("execution_policy.require_protected_file"):
+            result = send_simulator_input({"device_id": WORKER, "input_action": {"action": "snapshot"}},
+                                          self.cfg, self.commands)
+        capture = result["simulatorUI"]["capture"]
+        self.assertEqual(capture["backend"], "legacy")
+        self.assertEqual(capture["elements"][0]["identifier"], "probe.email")
+        self.assertNotIn("private value", str(result))
+        self.assertNotIn("snapshotID", capture)
+
     def test_shutdown_of_personal_simulator_never_reaches_simctl(self) -> None:
         with self.assertRaises(PolicyError) as caught:
             shutdown({"device_id": PERSONAL}, self.cfg, self.commands)

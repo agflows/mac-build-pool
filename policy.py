@@ -76,7 +76,7 @@ def simulator_input(body):
             "snapshotId": "--snapshot-id", "offset": "--row-offset", "limit": "--row-limit",
         }),
         "tapElement": (["tap", "--agent"], {"snapshotId": "--snapshot-id", "ref": "--ref"}, {}),
-        "tapMatching": (["tap", "--agent"], {}, {"identifier": "--id", "label": "--label"}),
+        "tapMatching": (["tap", "--agent"], {}, {"identifier": "--id", "label": "--label", "backend": None}),
         "holdElement": (["touch", "--agent", "--down", "--up"], {
             "snapshotId": "--snapshot-id", "ref": "--ref", "hold": "--delay",
         }, {}),
@@ -104,7 +104,7 @@ def simulator_input(body):
         raise invalid()
     if action == "snapshot" and "offset" in keys and "snapshotId" not in keys:
         raise invalid()
-    if action == "tapMatching" and len(keys) != 1:
+    if action == "tapMatching" and len(keys - {"backend"}) != 1:
         raise invalid()
     ranges = {"hold": (0.01, 10), "duration": (0.01, 10), "radius": (1, 4096),
               "scale": (0.1, 10), "degrees": (-360, 360), "count": (1, 2), "code": (0, 255),
@@ -161,6 +161,11 @@ def simulator_input(body):
             if not isinstance(value, str) or not 1 <= len(value) <= 256 or not value.isprintable() or not value.strip():
                 raise invalid()
             command.append(f"{flag}={value}")
+            continue
+        elif key == "backend":
+            if value != "legacy":
+                raise invalid()
+            command.remove("--agent")
             continue
         elif key == "modifiers":
             if (not isinstance(value, list) or not 1 <= len(value) <= 4

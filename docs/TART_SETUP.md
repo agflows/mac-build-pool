@@ -81,6 +81,12 @@ includes `simulatorUI.capture` with the AXe snapshot ID, visible rows, screen
 dimensions in points and, when applicable, a pagination cursor. Read the next
 page with the same snapshot ID and `page.nextOffset` as `offset`.
 
+Some simulator runtimes lack the display metadata required by AXe's checked
+input. In this case a snapshot can return `backend: "legacy"` and a bounded
+list of accessibility elements. Use a fresh identifier or label with
+`tapMatching` and `backend: "legacy"`. The legacy path does not issue snapshot
+references. A failed checked mutation is never repeated through the legacy path.
+
 ```sh
 python3 cli.py input SESSION '{"action":"snapshot"}'
 python3 cli.py input SESSION '{"action":"tapElement","snapshotId":"SNAPSHOT_UUID","ref":"e12"}'

@@ -306,8 +306,15 @@ def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
                                       omit_capture=sensitive)
     if kind in SIMULATOR_UI_ACTIONS:
         text = action.get("text")
-        return _read_simulator_ui(argv, commands, timeout=25,
-                                  input_bytes=text.encode("utf-8") if text is not None else None)
+        if action.get("backend") == "legacy":
+            completed = commands.run(argv, timeout=25)
+            return {"ok": True, "log": _check(completed, "Simulator selector tap failed"), "exitCode": 0}
+        result = _read_simulator_ui(argv, commands, timeout=25,
+                                    input_bytes=text.encode("utf-8") if text is not None else None)
+        if (kind == "snapshot" and not action.get("snapshotId")
+                and result["simulatorUI"].get("error", {}).get("code") == "observationFailed"):
+            return _legacy_simulator_snapshot(argv[0], device, action.get("limit", 64), commands)
+        return result
     if kind in {"type", "clipboardCopy"}:
         try:
             text = action["text"].encode("utf-8")
@@ -315,8 +322,10 @@ def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
                 completed = commands.run(argv, timeout=25, input_bytes=text)
             else:
                 # Legacy AXe's line reader loses leading/trailing newlines.
-                # Keep its existing literal input semantics for older callers.
-                completed = commands.run([*argv, "--", action["text"]], timeout=25)
+                with tempfile.NamedTemporaryFile(dir=TEMP_ROOT) as source:
+                    source.write(text)
+                    source.flush()
+                    completed = commands.run([*argv, "--file", source.name], timeout=25)
         except TimeoutError:
             raise CommandFailed("Simulator text operation timed out. Check the field before retrying.", 1) from None
         if completed.returncode != 0:
@@ -332,10 +341,20 @@ def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None, omit_captur
         completed = commands.run([argv[0], "--output", "json", *argv[1:]],
                                  timeout=timeout, input_bytes=input_bytes)
         ui = json.loads(completed.stdout)
-    except (ValueError, TimeoutError):
+    except TimeoutError:
         return _simulator_ui_error(failure)
+    except ValueError:
+        if argv[1] == "describe-ui":
+            code = f"accessibilityOutput{completed.returncode}"
+            return _simulator_ui_error(code)
+        return _simulator_ui_error(failure)
+    if isinstance(ui, dict) and ui.get("schema") == "axe.output.command-result" and ui.get("didError"):
+        error = ui.get("error")
+        code = error.get("code") if isinstance(error, dict) else None
+        if isinstance(code, str) and code.isascii() and code.isalnum() and len(code) <= 64:
+            return _simulator_ui_error(code)
     if (not isinstance(ui, dict) or ui.get("schema") != "axe.output.agent-result"
-            or ui.get("schemaVersion") != "2" or type(ui.get("didError")) is not bool
+            or ui.get("schemaVersion") not in ("1", "2") or type(ui.get("didError")) is not bool
             or not isinstance(ui.get("data"), dict)):
         return _simulator_ui_error(failure)
     data = ui["data"]
@@ -343,6 +362,13 @@ def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None, omit_captur
     for key in ("capture", "action", "observation", "cache"):
         if isinstance(data.get(key), dict):
             result[key] = {name: value for name, value in data[key].items() if name != "quarantine"}
+    capture = result.get("capture")
+    if ui["schemaVersion"] == "1" and capture is not None:
+        capture["rows"] = [row for name in ("targets", "scroll", "text")
+                           if isinstance(capture.get(name), list) for row in capture[name] if isinstance(row, str)]
+        keyboard = capture.get("keyboard")
+        if isinstance(keyboard, dict):
+            capture["keyboard"] = keyboard.get("state")
     if isinstance(data.get("quarantine"), dict):
         result["quarantined"] = True
     batch = data.get("batch")
@@ -362,6 +388,42 @@ def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None, omit_captur
 
 def _simulator_ui_error(code):
     return {"ok": True, "exitCode": 1, "simulatorUI": {"schemaVersion": 1, "error": {"code": code}}}
+
+
+def _legacy_simulator_snapshot(axe, device, limit, commands):
+    try:
+        completed = commands.run([axe, "--output", "json", "describe-ui", "--udid", device], timeout=25)
+        if completed.returncode:
+            return _simulator_ui_error("observationFailed")
+        roots = json.loads(completed.stdout)["data"]["result"]
+        if not isinstance(roots, list):
+            return _simulator_ui_error("observationFailed")
+    except (KeyError, TypeError, ValueError, TimeoutError):
+        return _simulator_ui_error("observationFailed")
+    elements = []
+    pending = list(reversed(roots))
+    while pending and len(elements) < limit:
+        node = pending.pop()
+        if not isinstance(node, dict):
+            continue
+        children = node.get("children")
+        if isinstance(children, list):
+            pending.extend(reversed(children))
+        label = node.get("AXLabel")
+        identifier = node.get("AXUniqueId") or node.get("AXIdentifier")
+        if not label and not identifier:
+            continue
+        elements.append({
+            "label": label[:160] if isinstance(label, str) else None,
+            "identifier": identifier[:256] if isinstance(identifier, str) else None,
+            "role": node["type"][:64] if isinstance(node.get("type"), str) else None,
+            "frame": {key: value for key, value in node.get("frame", {}).items()
+                      if key in ("x", "y", "width", "height") and type(value) in (int, float)}
+                     if isinstance(node.get("frame"), dict) else None,
+            "enabled": node.get("enabled") is True,
+        })
+    return {"ok": True, "exitCode": 0, "simulatorUI": {"schemaVersion": 1,
+            "capture": {"backend": "legacy", "elements": elements, "truncated": bool(pending)}}}
 
 
 def _simulator_preview(device, since, commands):
