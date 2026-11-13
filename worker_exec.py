@@ -385,7 +385,8 @@ def ensure_booted(device: str, approved: bool, cfg, commands: Commands, memory) 
     if boot_needs_approval(None, sample, approved):
         raise PolicyError("approval_required", "Simulator boot is waiting for approval.")
     _check(commands.run([commands.xcrun, "simctl", "boot", device], timeout=180), "boot failed")
-    status = commands.run([commands.xcrun, "simctl", "bootstatus", device, "-b"], timeout=300)
+    # A fresh clone can spend several minutes migrating its simulator data.
+    status = commands.run([commands.xcrun, "simctl", "bootstatus", device, "-b"], timeout=720)
     if status.returncode and not is_booted(probe, cfg, commands):
         raise CommandFailed(_tail(status) or "boot failed", int(status.returncode or 1))
     if getattr(cfg,'package_proxy',False):
