@@ -1,5 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
+import hashlib
+from pathlib import Path
+import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, call, patch
@@ -8,6 +11,7 @@ from vm_service import BuildTart, Service, STOP_GUEST_SIMULATORS
 from vm_runner import TartRunner
 from tart_lease import LeaseError
 from policy import PolicyError
+from worker_cache import WorkerCache
 
 WORKER='3C8BB98E-6383-446B-AF87-1E1282762A13'
 PERSONAL='4D015300-4BAE-4E6D-89C9-BC4D454E4216'
@@ -24,6 +28,36 @@ class VMServiceTest(unittest.TestCase):
 
     def reserve(self):
         return self.service.dispatch({'op':'reserve','lease_id':LEASE,'ttl':300})
+
+    def test_restore_reserves_fresh_lease_and_streams_matching_binary(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.service.cache = WorkerCache(Path(root) / 'cache', capacity=500, free_reserve=0)
+            self.addCleanup(self.service.cache.db.close)
+            self.backend.base_identity = {'diskSHA256':'reviewed'}
+            self.backend.cache_projects = {}
+            project, resume = 'a' * 64, 'b' * 64
+            data = b'cached simulator bundle'
+            with self.service.cache.stage(len(data), project) as (entry, archive):
+                archive.write(data)
+                archive.flush()
+                self.service.cache.publish(entry, 'binary', project, hashlib.sha256(data).hexdigest(),
+                                           resume=resume, device=WORKER, base='reviewed')
+
+            def transfer(vm, operation, device, *, source):
+                self.assertEqual(operation, 'restore')
+                self.assertEqual(device, GUEST)
+                self.assertEqual(source.read(), data)
+                return 0, b'{"ok":true,"bundle_id":"com.example.fixture"}', b''
+
+            self.backend.transfer_app.side_effect = transfer
+            request = {'op':'reserve', 'lease_id':LEASE, 'project':project,
+                       'resume_id':resume, 'session_id':'c' * 64}
+            self.assertTrue(self.service.dispatch(dict(request, project='d' * 64))['cacheMiss'])
+            self.backend.start.assert_not_called()
+            self.assertEqual(self.service.dispatch(request)['deviceId'], WORKER)
+            result = self.service.dispatch({'op':'restore','lease_id':LEASE,'device_id':WORKER})
+            self.assertEqual(result['bundle_id'], 'com.example.fixture')
+            self.backend.operation.assert_not_called()
 
     def test_status_and_reservation_do_not_start_a_vm(self):
         self.assertEqual(self.service.dispatch({'op':'status'})['state'],'idle')

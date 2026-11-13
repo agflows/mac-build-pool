@@ -76,9 +76,20 @@ class TartRunner:
         except (OSError,ValueError,PolicyError,WorkerFailure):
             return False
 
-    def lease_acquire(self, lease_id, ttl):
+    def cache_enabled(self):
+        try:
+            return self._call({'op':'capabilities'}, timeout=5).get('cacheEnabled') is True
+        except (OSError, ValueError, PolicyError, WorkerFailure):
+            return False
+
+    def lease_acquire(self, lease_id, ttl, *, project=None, resume_id=None, new_resume_id=None, device=None):
         with self.lock:
-            result=self._call({'op':'reserve','lease_id':lease_id,'ttl':ttl})
+            request = {'op':'reserve','lease_id':lease_id,'ttl':ttl}
+            if project:
+                request.update(project=project, resume_id=resume_id, session_id=new_resume_id, device_id=device)
+            result=self._call(request)
+            if result.get('cacheMiss'):
+                raise PolicyError('cache_miss', 'Cached build was evicted, replaced, or is incompatible.')
             self.lease=lease_id
             self.staged.clear()
             return result
@@ -147,7 +158,7 @@ class TartRunner:
             if len(raw)>self.worker.max_upload_bytes:
                 raise PolicyError('invalid_archive','source exceeds transfer limit')
             request['source_base64']=base64.b64encode(raw).decode()
-        result=self._call(request,timeout=3000)
+        result=self._call(request,timeout=3400 if job.kind == 'build' else 3000)
         # Guest-supplied paths never authorize reads of physical-host files.
         result.pop('artifact_path',None)
         result.pop('artifact_id',None)

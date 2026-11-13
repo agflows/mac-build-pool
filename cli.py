@@ -113,6 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     lease.add_argument('--simulator',action='store_true')
     lease.add_argument('--device',help='Worker simulator ID')
     lease.add_argument('--name',help='Name shown in the Mac menu')
+    lease.add_argument('--project',help='Stable project ID for the host cache')
+    lease.add_argument('--resume',help='Resume ID returned by a cached build')
     renew=sub.add_parser('renew')
     renew.add_argument('lease')
     release = sub.add_parser("release")
@@ -171,7 +173,7 @@ def main(argv: list[str]) -> int:
     if args.command == "health":
         status, raw = call(args.url, token, "GET", "/v1/health")
     elif args.command == "lease":
-        body = {'bootSimulator': args.simulator, 'deviceId': args.device, 'name': args.name}
+        body = {'bootSimulator': args.simulator, 'deviceId': args.device, 'name': args.name, 'project':args.project, 'resumeId':args.resume}
         status, raw = call(args.url, token, "POST", "/v1/leases", json.dumps(body).encode())
     elif args.command == "release":
         status, raw = call(args.url, token, "POST", f"/v1/leases/{args.lease}/release", b"{}")

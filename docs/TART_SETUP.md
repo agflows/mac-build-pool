@@ -65,6 +65,43 @@ and degrees), `describe` (accessibility tree), `type` (US-layout text),
 and `key` (HID code). The button action accepts home, lock, side-button,
 siri and apple-pay.
 
+## Build and dependency cache
+
+Pass a stable project ID at lease creation. The first successful cached build
+uses the host-issued resume ID returned with its lease. Subsequent successful
+builds replace that project's one cached binary and return a new resume ID in
+the build job result. Save the ID from the successful build result.
+
+```sh
+python3 cli.py lease --project happier-couple --name "CoupleApp build"
+# Upload, prepare, and build as usual. Save resumeId from the successful build.
+python3 cli.py release LEASE
+python3 cli.py lease --project happier-couple --resume RESUME_ID
+python3 cli.py wait START_JOB
+```
+
+Resume starts a fresh lease and a new live simulator session on the saved
+build's target. It installs the saved simulator application without compiling.
+Resume IDs are bound to the bearer credential and project. A replaced,
+evicted, or incompatible binary returns `cache_miss`; build again from source.
+Legacy leases without a project continue to work without caching.
+
+The controller gives both caches a single 5,000,000,000-byte budget. A
+dependency can displace the least recently used binary, then the least
+recently used dependency. A binary may replace its project's single binary
+and displace other projects' binaries and dependencies in that order. Its
+project's dependency downloads, including shared packages, stay protected
+during insertion. If storage is insufficient, the build still succeeds and
+the job reports `cacheStored: false`. A transfer in progress is pinned.
+
+The relay caches complete anonymous versioned npm/Bun, hosted Dart, and
+React Native/Hermes archive downloads on its existing approved hosts and
+paths. Package managers still install from the lockfile and verify package
+integrity where supplied by their ecosystem. The host verifies the saved
+bytes on reuse. Other requests, including SwiftPM Git traffic and private
+registries, follow the existing relay policy without caching. DerivedData,
+install directories, and simulator data live only in the disposable guest.
+
 ## Apple Watch simulators
 
 Use Xcode's complete Apple watchOS 26.5 arm64 `.exportedBundle` with
