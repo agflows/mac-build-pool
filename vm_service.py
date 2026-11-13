@@ -348,6 +348,8 @@ class Service:
             return {'ok':True,'released':True}
         if op not in ALLOWED_OPS and op != 'restore':
             raise LeaseError('unsupported operation')
+        if op == 'input' and not request.get('device_id'):
+            raise LeaseError('simulator input requires a mapped device')
         if request.get('device_id'):
             check_device(request['device_id'],self.devices.keys(),{PERSONAL})
         with self.job_lock:
@@ -377,10 +379,6 @@ class Service:
                     return json.loads(output)
             if op=='vm_start':
                 return {'ok':True,'log':'leased VM ready; simulator remains off'}
-            if op == 'input':
-                device = request.get('device_id')
-                if not device:
-                    raise LeaseError('simulator input requires a mapped device')
             payload = dict(request)
             payload.pop('lease_id',None)
             payload.pop('ttl',None)

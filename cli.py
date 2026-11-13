@@ -273,7 +273,9 @@ def main(argv: list[str]) -> int:
                     print(log)
             return 0 if job.get("status") == "succeeded" else 1
         if status == 404 and args.request_id is None:
-            status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/input", action)
+            health_status, health_raw = call(args.url, token, "GET", "/v1/health")
+            if health_status == 200 and "simulatorInteract" not in json.loads(health_raw):
+                status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/input", action)
         payload = print_json(raw)
         if status != 202:
             return 1
