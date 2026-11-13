@@ -12,7 +12,7 @@ import shutil
 import unittest
 from unittest.mock import patch
 
-from vm_transport import communicate
+from vm_transport import InputPipe, communicate
 from host_egress import Relay
 from egress_policy import EgressDenied
 from worker_cache import WorkerCache
@@ -43,6 +43,28 @@ class TransportTest(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             communicate([sys.executable,'-c','import time;time.sleep(60)'],b'',
                         env={'PATH':'/usr/bin:/bin'},timeout=0.1)
+
+class InputPipeTest(unittest.TestCase):
+    def pipe(self, body):
+        pipe = InputPipe([sys.executable, "-u", "-c", body], {"PATH": "/usr/bin:/bin"})
+        self.addCleanup(pipe.close)
+        return pipe
+
+    def test_multiple_requests_use_one_process(self):
+        pipe = self.pipe("import json,os,sys\nfor line in sys.stdin:\n"
+                         " request=json.loads(line); print(json.dumps({'job_id': request['job_id'], 'pid': os.getpid()}))")
+        for job_id in ("first", "second"):
+            result = pipe.exchange({"job_id": job_id}, timeout=3)
+            self.assertEqual(result, {"job_id": job_id, "pid": pipe.process.pid})
+
+    def test_rejects_mismatched_reply_and_read_timeout(self):
+        pipe = self.pipe("input(); print('{\"job_id\":\"wrong\"}')")
+        with self.assertRaisesRegex(ValueError, "unexpected simulator reply"):
+            pipe.exchange({"job_id": "first"}, timeout=3)
+        pipe = self.pipe("import time; input(); time.sleep(10)")
+        with self.assertRaises(TimeoutError):
+            pipe.exchange({"job_id": "first"}, timeout=0.25)
+
 
 class RelayTest(unittest.TestCase):
     def setUp(self):

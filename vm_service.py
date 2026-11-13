@@ -15,7 +15,9 @@ import threading
 import sys
 import time
 import hashlib
+import io
 import shutil
+import tarfile
 import sqlite3
 
 _CODE_ROOT=str(Path(__file__).resolve().parent)
@@ -29,13 +31,14 @@ from host_egress import Relay
 from owner_menu import usage
 from policy import require_id, check_device, PolicyError
 from tart_lease import OfflineTart, LeaseController, LeaseError
-from vm_transport import communicate, read_frame
+from vm_transport import InputPipe, communicate, read_frame
 from worker_cache import CacheFull, HEX, MAX_ARCHIVE, WorkerCache
 
 ALLOWED_OPS = frozenset({'vm_start','prepare','build','launch','uitest','screenshot','logs','reset','boot','booted','shutdown','input'})
 PERSONAL = '4D015300-4BAE-4E6D-89C9-BC4D454E4216'
 FIELDS = frozenset({'op','lease_id','ttl','job_id','revision_id','session_id','device_id','scheme','recipe',
                     'public_env','configuration','for_testing','artifact_id','source_base64','approved','input_action','project','resume_id'})
+GUEST_PAYLOAD = ('containment.py', 'policy.py', 'worker_exec.py', 'guest_rpc.py')
 
 STOP_GUEST_SIMULATORS = b"""
 import json
@@ -68,6 +71,7 @@ class BuildTart(OfflineTart):
         super().__init__(*args, **kwargs)
         self.allowed = allowed
         self.relays = {}
+        self.inputs = {}
         self.base_identity=base_identity
         self.cache = cache
         self.cache_projects = {}
@@ -87,6 +91,7 @@ class BuildTart(OfflineTart):
     def start(self, name):
         self.check_base()
         super().start(name)
+        self.install_guest_payload(name)
         self.prepare_relay_certificate(name)
         with self.lock:
             if name in self.cancelled:
@@ -110,6 +115,29 @@ class BuildTart(OfflineTart):
             except (subprocess.CalledProcessError,subprocess.TimeoutExpired):
                 time.sleep(0.25)
         raise LeaseError('guest package relay startup timed out')
+
+    def install_guest_payload(self, name):
+        # Only the controller's reviewed modules are sent. A lease has not
+        # received source or started its simulator at this point.
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode='w') as output:
+            for filename in GUEST_PAYLOAD:
+                path = Path(__file__).with_name(filename)
+                if self.base_identity is not None:
+                    require_protected_file(path)
+                data = path.read_bytes()
+                member = tarfile.TarInfo(filename)
+                member.size = len(data)
+                member.mode = 0o644
+                output.addfile(member, io.BytesIO(data))
+        with self.lock:
+            if name in self.cancelled:
+                raise LeaseError('startup cancelled')
+        argv = [self.binary, 'exec', '-i', name, '/usr/bin/sudo', '-n', '/usr/bin/tar',
+                '-xf', '-', '-C', '/Library/ios-worker']
+        code, _, error = communicate(argv, archive.getvalue(), env=self.env, timeout=45, cap=65536)
+        if code:
+            raise LeaseError('reviewed guest payload failed to install: ' + error.decode(errors='replace')[-500:])
 
     def prepare_relay_certificate(self, name):
         # The base CA and its key stay inside the guest. Issue a leaf for the
@@ -137,12 +165,14 @@ class BuildTart(OfflineTart):
     def stop(self, name):
         with self.lock:
             self.cache_projects.pop(name, None)
+            self.close_input(name)
             relay = self.relays.pop(name, None)
             if relay:
                 relay.close()
             super().stop(name)
 
     def stop_simulators(self, name):
+        self.close_input(name)
         command = [self.binary, 'exec', '-i', name, '/usr/bin/sudo', '-n', '-u', 'iosagent',
                    '/usr/bin/python3', '-I', '-']
         code, _, error = communicate(command, STOP_GUEST_SIMULATORS, env=self.env,
@@ -150,6 +180,12 @@ class BuildTart(OfflineTart):
         if code:
             raise LeaseError('guest simulators failed to shut down before build: '
                              + error.decode(errors='replace')[-500:])
+
+    def close_input(self, name):
+        with self.lock:
+            channel = self.inputs.pop(name, None)
+            if channel:
+                channel.close()
 
     def transfer_app(self, vm, operation, device, *args, source=b'', sink=None):
         # The installed controller owns this fixed script. Only simulator IDs and
@@ -185,6 +221,10 @@ class BuildTart(OfflineTart):
             return False
 
     def operation(self, name, request):
+        if request['op'] == 'input':
+            return self.input_operation(name, request)
+        if request['op'] in {'shutdown', 'reset'}:
+            self.close_input(name)
         timeout = {'prepare':2700,'build':BUILD_TIMEOUT+60,'uitest':2160,'launch':1320,'boot':1200,
                    'screenshot':1260,'reset':360}.get(request['op'],120)
         code, stdout, stderr = communicate([self.binary,'exec','-i',name,'/usr/bin/sudo','-n','-u','iosagent',
@@ -199,6 +239,35 @@ class BuildTart(OfflineTart):
                 return result
             raise LeaseError('guest operation failed')
         return result
+
+    def input_operation(self, name, request):
+        started = time.monotonic()
+        with self.lock:
+            if name in self.cancelled or name not in self.processes or self.processes[name].poll() is not None:
+                raise LeaseError('simulator lease has stopped')
+            channel = self.inputs.get(name)
+            if channel is None:
+                argv = [self.binary, 'exec', '-i', name, '/usr/bin/sudo', '-n', '-u', 'iosagent',
+                        '/usr/bin/python3', '-I', '/Library/ios-worker/guest_rpc.py', '--input-loop']
+                channel = self.inputs[name] = InputPipe(argv, self.env)
+        payload = {key: request[key] for key in ('op', 'job_id', 'device_id', 'input_action')}
+        try:
+            reply = channel.exchange(payload, timeout=110)
+        except (EOFError, ValueError, OSError, TimeoutError):
+            with self.lock:
+                if self.inputs.get(name) is channel:
+                    self.inputs.pop(name)
+                    channel.close()
+            return {'ok': True, 'exitCode': 1, 'simulatorUI': {'schemaVersion': 1,
+                    'error': {'code': 'actionOutcomeUnknown'}},
+                    'simulatorTiming': {'controllerMs': round(1000 * (time.monotonic() - started))}}
+        reply.pop('job_id')
+        controller_ms = round(1000 * (time.monotonic() - started))
+        guest_ms = reply.pop('guestMs', None)
+        reply['simulatorTiming'] = {'controllerMs': controller_ms}
+        if type(guest_ms) is int and 0 <= guest_ms <= 110000:
+            reply['simulatorTiming']['guestMs'] = guest_ms
+        return reply
 
 
 class Service:
@@ -307,6 +376,10 @@ class Service:
                     return json.loads(output)
             if op=='vm_start':
                 return {'ok':True,'log':'leased VM ready; simulator remains off'}
+            if op == 'input':
+                device = request.get('device_id')
+                if not device:
+                    raise LeaseError('simulator input requires a mapped device')
             payload = dict(request)
             payload.pop('lease_id',None)
             payload.pop('ttl',None)

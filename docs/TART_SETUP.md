@@ -65,6 +65,15 @@ and degrees), `describe` (accessibility tree), `type` (US-layout text),
 and `key` (HID code). The button action accepts home, lock, side-button,
 siri and apple-pay.
 
+The `input` CLI uses `POST /v1/sessions/{id}/interact`. A completed call
+returns its result directly. Longer calls return the job ID for polling.
+If the connection is lost, reuse the same request ID and input to retrieve
+the receipt without dispatching the action again. A second action during a
+busy operation returns HTTP 409. Builds and simulator input remain serialized.
+The controller starts one guest input process on demand and closes it before
+build preparation, simulator shutdown, or lease cleanup. It never opens a
+guest network listener.
+
 ### Accessibility and text input
 
 Read a structured snapshot before acting on a control. The completed input job
@@ -79,6 +88,7 @@ python3 cli.py input SESSION '{"action":"tapMatching","identifier":"signIn.conti
 python3 cli.py input SESSION '{"action":"waitFor","condition":"settled","timeout":8}'
 python3 cli.py input SESSION '{"action":"waitFor","condition":"keyboardVisible","timeout":8}'
 python3 cli.py input SESSION - < action.json
+python3 cli.py input SESSION '{"action":"preview"}'
 ```
 
 Use the returned snapshot for the next action. If an action returns
@@ -105,6 +115,16 @@ directional swipe inside a snapshot's scroll area. `appearance` and
 `contentSize` change the iPhone's UI settings through simctl. Use
 `screenshot` for visual evidence and for screens with limited accessibility
 information.
+
+For a form visible in one snapshot, send `batch` with a snapshot ID and up to
+eight ordered `tap` or `type` steps. A step may stop the batch if the screen
+changed. The response includes the count of completed steps. Verify the
+current screen before continuing a partially completed batch.
+
+Previews return an in-memory JPEG (720 pixels wide, at most
+512 KiB before base64 encoding) with a frame hash. Send `sinceFrameId` to
+skip returning the same JPEG. Use the screenshot route for a full-resolution
+PNG. Previews are captured on request and are cleared on lease release.
 
 ## Build and dependency cache
 

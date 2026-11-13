@@ -11,7 +11,7 @@ import hashlib
 
 from containment import MAX_ARTIFACT_BYTES
 from execution_policy import require_protected_file
-from policy import check_device, require_id, require_under, PolicyError
+from policy import MAX_PREVIEW_BYTES, check_device, require_id, require_under, PolicyError
 from runner import WorkerFailure
 from vm_transport import rpc
 
@@ -159,6 +159,9 @@ class TartRunner:
                 raise PolicyError('invalid_archive','source exceeds transfer limit')
             request['source_base64']=base64.b64encode(raw).decode()
         result=self._call(request,timeout=3400 if job.kind == 'build' else 3000)
+        preview = result.pop('simulatorPreview', None)
+        if preview is not None and job.kind == 'input' and job.input_action.get('action') == 'preview':
+            result['simulatorPreview'] = self._validate_preview(preview, job.input_action.get('sinceFrameId'))
         # Guest-supplied paths never authorize reads of physical-host files.
         result.pop('artifact_path',None)
         result.pop('artifact_id',None)
@@ -181,3 +184,23 @@ class TartRunner:
                 stream.write(raw)
             result.update(artifact_id=artifact_id,artifact_path=str(path))
         return result
+
+    @staticmethod
+    def _validate_preview(preview, since):
+        if not isinstance(preview, dict) or type(preview.get('changed')) is not bool:
+            raise PolicyError('invalid_preview', 'Invalid simulator preview.')
+        frame_id = preview.get('id')
+        if not preview['changed'] and since and frame_id == since:
+            return {'id': frame_id, 'changed': False}
+        data = preview.get('jpegBase64')
+        if (not preview['changed'] or not isinstance(data, str)
+                or len(data) > (MAX_PREVIEW_BYTES + 2) // 3 * 4):
+            raise PolicyError('invalid_preview', 'Invalid simulator preview.')
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except ValueError as exc:
+            raise PolicyError('invalid_preview', 'Invalid simulator preview.') from exc
+        if (len(raw) > MAX_PREVIEW_BYTES or not raw.startswith(b'\xff\xd8\xff')
+                or not raw.endswith(b'\xff\xd9') or hashlib.sha256(raw).hexdigest() != frame_id):
+            raise PolicyError('invalid_preview', 'Invalid simulator preview.')
+        return {'id': frame_id, 'changed': True, 'jpegBase64': data}

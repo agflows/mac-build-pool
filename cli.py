@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 # Also support the installed, owner-controlled CLI under python3 -I.
@@ -152,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     simulator = sub.add_parser("input", help="Send a JSON simulator action to a leased iOS session")
     simulator.add_argument("session")
     simulator.add_argument("action", help='JSON action, or - to read JSON from standard input')
+    simulator.add_argument("--request-id", help="Reuse this ID to recover an interaction after a disconnect.")
     status = sub.add_parser("status")
     status.add_argument("job")
     logs = sub.add_parser("logs")
@@ -229,7 +231,27 @@ def main(argv: list[str]) -> int:
                 raise SystemExit("Simulator input JSON exceeds 1 MiB.")
         else:
             action = args.action.encode()
-        status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/input", action)
+        request_id = args.request_id or uuid.uuid4().hex
+        try:
+            data = {"requestId": request_id, "input": json.loads(action)}
+        except ValueError:
+            raise SystemExit("Simulator input must be valid JSON.") from None
+        try:
+            status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/interact", json.dumps(data).encode())
+        except (OSError, TimeoutError):
+            raise SystemExit(f"Interaction connection lost. Recover with --request-id {request_id}.") from None
+        if status == 200:
+            job = print_json(raw)
+            if "simulatorUI" in job or "simulatorPreview" in job or not job.get("jobId"):
+                return 0 if job.get("status") == "succeeded" else 1
+            status, raw = call(args.url, token, "GET", f"/v1/jobs/{job['jobId']}/logs")
+            if status == 200:
+                log = json.loads(raw).get("log")
+                if log:
+                    print(log)
+            return 0 if job.get("status") == "succeeded" else 1
+        if status == 404 and args.request_id is None:
+            status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/input", action)
         payload = print_json(raw)
         if status != 202:
             return 1

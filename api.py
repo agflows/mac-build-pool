@@ -246,11 +246,22 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
     if len(segments) == 4 and segments[0] == "v1" and segments[1] == "sessions":
         session_id = require_id(segments[2], "session")
         action = segments[3]
+        if method == "POST" and action == "interact":
+            data = read_json(body)
+            if set(data) != {"requestId", "input"}:
+                raise PolicyError("invalid_body", "Expected requestId and input.")
+            simulator_input(data["input"])
+            job = scheduler.interact(session_id, data["input"], data["requestId"])
+            view = job_view(job)
+            view["requestId"] = data["requestId"]
+            return (200 if job.status in ("succeeded", "failed") else 202), view, JSON
         if method == "POST" and action == "screenshot":
             return 202, job_view(scheduler.submit_screenshot(session_id)), JSON
         if method == "POST" and action == "input":
             body = read_json(body)
             simulator_input(body)
+            if body["action"] == "preview":
+                raise PolicyError("invalid_body", "Use the interact route for previews.")
             return 202, job_view(scheduler.submit_input(session_id, body)), JSON
         if method == "POST" and action == "logs":
             return 202, job_view(scheduler.submit_logs(session_id)), JSON
@@ -319,6 +330,10 @@ def job_view(job) -> dict:
     ui = job.result.get("simulatorUI")
     if job.kind == "input" and isinstance(ui, dict):
         view["simulatorUI"] = ui
+    if job.kind == "input" and isinstance(job.result.get("simulatorTiming"), dict):
+        view["simulatorTiming"] = job.result["simulatorTiming"]
+    if job.kind == "input" and isinstance(job.result.get("simulatorPreview"), dict):
+        view["simulatorPreview"] = job.result["simulatorPreview"]
     return view
 
 
@@ -410,8 +425,10 @@ def status_for(exc: PolicyError) -> int:
         return 507
     if exc.code == "cache_miss":
         return 404
-    if exc.code == "session_busy":
+    if exc.code in {"session_busy", "request_conflict"}:
         return 409
+    if exc.code == "interaction_limit":
+        return 429
     return 400
 
 

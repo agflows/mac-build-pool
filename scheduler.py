@@ -8,6 +8,8 @@ POST /v1/jobs/<id>/approve.
 from __future__ import annotations
 
 import sys
+import hashlib
+import json
 import secrets
 import threading
 import uuid
@@ -49,6 +51,7 @@ class Job:
     for_testing: bool = True
     approved: bool = False
     input_action: Optional[dict] = None
+    queued_at: Optional[float] = None
     followup_id: Optional[str] = None
     error: Optional[str] = None
     exit_code: Optional[int] = None
@@ -100,6 +103,9 @@ class Scheduler:
         self._previous_memory: Optional[MemorySample] = None
         self._last_busy = clock()
         self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)
+        self._input_receipts = {}
+        self._input_waiters = 0
         self._wake = threading.Event()
 
     def add_revision(self, revision_id: str, archive_path: str) -> None:
@@ -186,15 +192,18 @@ class Scheduler:
             if self.lease is None or self.lease.get("id") != lease_id:
                 raise KeyError(lease_id)
             self.lease["status"] = "released"
+            self._input_receipts.clear()
             for job in self.jobs.values():
                 if job.lease_id != lease_id:
                     continue
                 if job.kind == "input":
                     job.result.pop("simulatorUI", None)
+                    job.result.pop("simulatorPreview", None)
                 if job.status in ("queued", "waiting_for_approval"):
                     job.input_action = None
                     job.status = "failed"
                     job.error = "session released"
+            self._changed.notify_all()
         hook=getattr(self.runner,'lease_release',None)
         if hook:
             hook(lease_id)
@@ -287,6 +296,48 @@ class Scheduler:
         return self._enqueue(Job(id=_new_id(), kind="input", session_id=session_id,
                                  device_id=session["device_id"], lease_id=session["lease_id"],
                                  input_action=dict(action)))
+
+    def interact(self, session_id: str, action: dict, request_id: str, timeout: float = 25) -> Job:
+        require_id(session_id, "session")
+        require_id(request_id, "request")
+        fingerprint = hashlib.sha256(json.dumps(action, sort_keys=True).encode()).digest()
+        with self._changed:
+            session = self.sessions[session_id]
+            self._require_lease_locked(session["lease_id"])
+            key = (session_id, request_id)
+            receipt = self._input_receipts.get(key)
+            if receipt:
+                job_id, previous = receipt
+                if fingerprint != previous:
+                    raise PolicyError("request_conflict", "This request ID already names another action.")
+                job = self.jobs[job_id]
+            else:
+                if self._session_ready(session_id) != "ready":
+                    raise PolicyError("session_busy", "The simulator session is still starting.")
+                if len(self._input_receipts) >= 2048:
+                    raise PolicyError("interaction_limit", "Start a new lease to submit further interactions.")
+                if self.running_ids or any(
+                    item.status in ("queued", "waiting_for_approval") for item in self.jobs.values()
+                ):
+                    raise PolicyError("session_busy", "The worker is already processing an operation.")
+                job = Job(id=_new_id(), kind="input", session_id=session_id,
+                          device_id=self._device(session["device_id"]), lease_id=session["lease_id"],
+                          input_action=dict(action), queued_at=self.clock())
+                self._put_locked(job)
+                self._input_receipts[key] = (job.id, fingerprint)
+                self._wake.set()
+            if self._input_waiters >= 8:
+                return self._copy(job)
+            self._input_waiters += 1
+            try:
+                self._changed.wait_for(
+                    lambda: job.status in ("succeeded", "failed") or not self._lease_active(job.lease_id),
+                    timeout=timeout,
+                )
+                self._require_lease_locked(job.lease_id)
+                return self._copy(job)
+            finally:
+                self._input_waiters -= 1
 
     def submit_uitest(self, revision_id: str, scheme: Optional[str], device_id: Optional[str], lease_id: str, configuration: str = "Debug") -> Job:
         if scheme is not None:
@@ -518,6 +569,7 @@ class Scheduler:
     def _execute(self, job_id: str) -> None:
         with self._lock:
             job = self.jobs[job_id]
+            started = self.clock()
         try:
             if self.disk_used() > self.disk_budget:
                 raise PolicyError("storage_limit", "Worker storage is over the 20 GB budget.")
@@ -530,6 +582,14 @@ class Scheduler:
                 if current.lease_id and not self._lease_active(current.lease_id):
                     raise PolicyError('lease_required','Lease ended before the operation completed.')
                 current.result = result if isinstance(result, dict) else {"ok": True}
+                if current.queued_at is not None:
+                    timing = current.result.setdefault("simulatorTiming", {})
+                    timing["queueMs"] = round(1000 * (started - current.queued_at))
+                    timing["executionMs"] = round(1000 * (self.clock() - started))
+                    for old_id, _ in list(self._input_receipts.values())[:-16]:
+                        self.jobs[old_id].result.pop("simulatorUI", None)
+                    for old_id, _ in list(self._input_receipts.values())[:-2]:
+                        self.jobs[old_id].result.pop("simulatorPreview", None)
                 current.log = log
                 current.exit_code = result.get("exitCode") if isinstance(result, dict) else 0
                 if current.kind == "input" and isinstance(current.result.get("simulatorUI"), dict) and current.exit_code:
@@ -559,6 +619,7 @@ class Scheduler:
                 job.input_action = None
                 self.running_ids.discard(job_id)
                 self._last_busy = self.clock()
+                self._changed.notify_all()
             self._wake.set()
 
     def _register_artifact(self, job: Job) -> None:

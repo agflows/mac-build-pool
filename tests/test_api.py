@@ -157,6 +157,27 @@ class ApiTest(unittest.TestCase):
         self.scheduler.release_lease(lease)
         self.assertNotIn("simulatorUI", json.loads(self._request("GET", path)[1]))
 
+    def test_interact_waits_and_recovers_the_same_job_without_replaying(self):
+        lease = self.scheduler.acquire_lease()
+        self.scheduler.revisions["test"] = {"status": "ready"}
+        launch, session = self.scheduler.submit_launch("test", None, lease)
+        self.scheduler.jobs[launch.id].status = "succeeded"
+        self.scheduler.memory = lambda: MemorySample(1, 0, 0)
+        stop = threading.Event()
+        threading.Thread(target=self.scheduler.run_forever, args=(stop,), daemon=True).start()
+        self.addCleanup(stop.set)
+        path = f"/v1/sessions/{session}/interact"
+        body = {"requestId": "req1", "input": {"action": "tap", "x": 50, "y": 60}}
+        first, reply = self._request("POST", path, json.dumps(body).encode())
+        second, repeated = self._request("POST", path, json.dumps(body).encode())
+        self.assertEqual((first, second), (200, 200))
+        self.assertEqual(json.loads(reply)["jobId"], json.loads(repeated)["jobId"])
+        self.assertEqual(self.runner.started, [("input", WORKER)])
+        body["input"]["x"] = 51
+        self.assertEqual(self._request("POST", path, json.dumps(body).encode())[0], 409)
+        self.scheduler.release_lease(lease)
+        self.assertEqual(self._request("POST", path, json.dumps(body).encode())[0], 409)
+
     def test_personal_simulator_is_forbidden(self) -> None:
         body = json.dumps({"revisionId": "rev0001", "deviceId": PERSONAL}).encode()
         status, payload = self._request("POST", "/v1/sessions", body)

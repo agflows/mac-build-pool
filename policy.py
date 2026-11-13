@@ -18,8 +18,10 @@ SCHEME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_+.\-]{0,63}$")
 SNAPSHOT_RE = re.compile(r"^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$")
 ELEMENT_REF_RE = re.compile(r"^e[1-9][0-9]{0,7}$")
 SIMULATOR_UI_ACTIONS = frozenset({
-    "snapshot", "tapElement", "tapMatching", "holdElement", "scrollElement", "typeInto", "waitFor",
+    "snapshot", "tapElement", "tapMatching", "holdElement", "scrollElement", "typeInto", "waitFor", "batch",
 })
+MAX_INPUT_BATCH = 8
+MAX_PREVIEW_BYTES = 512 * 1024
 GESTURE_PRESETS = frozenset({
     "scroll-up", "scroll-down", "scroll-left", "scroll-right",
     "swipe-from-left-edge", "swipe-from-right-edge", "swipe-from-top-edge",
@@ -43,6 +45,22 @@ def simulator_input(body):
     if not isinstance(body, dict) or not isinstance(body.get("action"), str):
         raise invalid()
     action = body["action"]
+    if action == "batch":
+        if set(body) != {"action", "snapshotId", "steps"}:
+            raise invalid()
+        snapshot, steps = body["snapshotId"], body["steps"]
+        if (not isinstance(snapshot, str) or not SNAPSHOT_RE.fullmatch(snapshot)
+                or not isinstance(steps, list) or not 1 <= len(steps) <= MAX_INPUT_BATCH):
+            raise invalid()
+        for step in steps:
+            if not isinstance(step, dict):
+                raise invalid()
+            kind = step.get("action")
+            if kind not in ("tap", "type") or "snapshotId" in step:
+                raise invalid()
+            simulator_input({**step, "action": "tapElement" if kind == "tap" else "typeInto",
+                             "snapshotId": snapshot})
+        return ["batch", "--agent"]
     schemas = {
         "tap": (["tap"], {"x": "-x", "y": "-y"}, {"hold": "--hold", "count": "--count"}),
         "swipe": (["swipe"], {"x": "--start-x", "y": "--start-y", "endX": "--end-x", "endY": "--end-y"}, {"duration": "--duration"}),
@@ -74,6 +92,7 @@ def simulator_input(body):
         "gesture": (["gesture"], {"preset": None}, {"duration": "--duration"}),
         "appearance": ([], {"style": None}, {}),
         "contentSize": ([], {"size": None}, {}),
+        "preview": ([], {}, {"sinceFrameId": None}),
     }
     if action not in schemas:
         raise invalid()
@@ -116,6 +135,10 @@ def simulator_input(body):
             pattern = SNAPSHOT_RE if key == "snapshotId" else ELEMENT_REF_RE
             if not isinstance(value, str) or not pattern.fullmatch(value):
                 raise invalid()
+        elif key == "sinceFrameId":
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise invalid()
+            continue
         elif key == "focus":
             if type(value) is not bool:
                 raise invalid()

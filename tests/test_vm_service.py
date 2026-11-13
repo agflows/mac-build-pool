@@ -1,4 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
+import base64
+import hashlib
 import subprocess
 import hashlib
 from pathlib import Path
@@ -207,6 +209,16 @@ class VMServiceTest(unittest.TestCase):
 
 
 class GuestSimulatorTest(unittest.TestCase):
+    def test_preview_validation_binds_bytes_to_frame_id(self):
+        raw = b"\xff\xd8\xffexample\xff\xd9"
+        frame_id = hashlib.sha256(raw).hexdigest()
+        preview = {"id": frame_id, "changed": True, "jpegBase64": base64.b64encode(raw).decode()}
+        self.assertEqual(TartRunner._validate_preview(preview, None), preview)
+        self.assertEqual(TartRunner._validate_preview({"id": frame_id, "changed": False}, frame_id),
+                         {"id": frame_id, "changed": False})
+        with self.assertRaises(PolicyError):
+            TartRunner._validate_preview({**preview, "id": "wrong"}, None)
+
     def test_waits_for_both_phone_and_watch_to_shut_down(self):
         with patch('os.chdir'), patch('time.sleep'), \
                 patch.object(subprocess, 'check_output', side_effect=[

@@ -8,6 +8,61 @@ import subprocess
 import time
 
 LIMIT = 96 * 1024 * 1024
+INPUT_REQUEST_LIMIT = 128 * 1024
+INPUT_RESULT_LIMIT = 2 * 1024 * 1024
+
+
+class InputPipe:
+    """One controller-owned, ordered stdio channel to a lease guest."""
+
+    def __init__(self, argv, env):
+        self.process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, env=env, cwd='/private/tmp',
+                                        start_new_session=True, close_fds=True)
+        os.set_blocking(self.process.stdin.fileno(), False)
+        os.set_blocking(self.process.stdout.fileno(), False)
+
+    def exchange(self, request, timeout):
+        payload = json.dumps(request, separators=(',', ':')).encode() + b'\n'
+        if len(payload) > INPUT_REQUEST_LIMIT:
+            raise ValueError('simulator request exceeds transfer cap')
+        pending = memoryview(payload)
+        reply = bytearray()
+        deadline = time.monotonic() + timeout
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdin, selectors.EVENT_WRITE)
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            while (remaining := deadline - time.monotonic()) > 0:
+                for key, event in selector.select(min(remaining, 0.25)):
+                    if event == selectors.EVENT_WRITE:
+                        pending = pending[os.write(key.fd, pending):]
+                        if not pending:
+                            selector.unregister(key.fileobj)
+                        continue
+                    chunk = os.read(key.fd, min(65536, INPUT_RESULT_LIMIT + 1 - len(reply)))
+                    if not chunk:
+                        raise EOFError('simulator channel closed')
+                    reply.extend(chunk)
+                    if len(reply) > INPUT_RESULT_LIMIT:
+                        raise ValueError('simulator reply exceeds transfer cap')
+                    if b'\n' in chunk:
+                        if pending or not reply.endswith(b'\n') or b'\n' in reply[:-1]:
+                            raise ValueError('unexpected simulator reply framing')
+                        result = json.loads(reply)
+                        if not isinstance(result, dict) or result.get('job_id') != request['job_id']:
+                            raise ValueError('unexpected simulator reply')
+                        return result
+        raise TimeoutError('simulator channel timed out')
+
+    def close(self):
+        if self.process.poll() is None:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        self.process.wait(timeout=5)
+        self.process.stdin.close()
+        self.process.stdout.close()
 
 
 def communicate(argv, payload, *, env, timeout, cap=64 * 1024 * 1024, sink=None):

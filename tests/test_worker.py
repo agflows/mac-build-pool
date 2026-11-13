@@ -124,6 +124,16 @@ class WorkerGuardTest(unittest.TestCase):
             [self.commands.xcrun, "simctl", "pbcopy", WORKER], timeout=25, input_bytes="Grüße".encode())
         self.assertEqual(result["log"], "")
 
+    def test_batch_validates_all_steps_before_running(self):
+        action = {"action": "batch", "snapshotId": WORKER, "steps": [
+            {"action": "type", "ref": "e2", "text": "test@example.test", "focus": True},
+            {"action": "tap", "ref": "e3"},
+        ]}
+        self.assertEqual(simulator_input(action), ["batch", "--agent"])
+        action["steps"][1]["udid"] = PERSONAL
+        with self.assertRaises(PolicyError):
+            simulator_input(action)
+
     def test_shutdown_of_personal_simulator_never_reaches_simctl(self) -> None:
         with self.assertRaises(PolicyError) as caught:
             shutdown({"device_id": PERSONAL}, self.cfg, self.commands)

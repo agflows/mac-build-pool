@@ -14,6 +14,8 @@ _CODE_ROOT = str(Path(__file__).resolve().parent)
 if _CODE_ROOT not in sys.path:
     sys.path.insert(0, _CODE_ROOT)
 
+import base64
+import hashlib
 import json
 import os
 import plistlib
@@ -21,6 +23,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import time
 
 from config import DEVELOPER_DIR, LIBRARY_ROOT, load_worker_config
@@ -29,7 +32,7 @@ from memory import boot_needs_approval, sample_system
 from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_bool, require_configuration, require_recipe, require_public_env
 from tarsafe import extract_source
 from workspace import is_expo_project, is_flutter_project, copy_flutter_sdk, toolchain_paths, workspace_env, preparation_receipt, load_prepared_env
-from policy import SIMULATOR_UI_ACTIONS, simulator_input
+from policy import MAX_PREVIEW_BYTES, SIMULATOR_UI_ACTIONS, simulator_input
 
 install_import_path()
 CONFIG_PATH = LIBRARY_ROOT / "worker.json"
@@ -264,10 +267,12 @@ def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
     arguments = simulator_input(action)
     kind = action["action"]
     device = _device(request, cfg)
-    if cfg.device_platforms.get(device, "iOS") != "iOS":
+    if kind != "preview" and cfg.device_platforms.get(device, "iOS") != "iOS":
         raise PolicyError("unsupported_device", "Simulator input currently supports iOS sessions.")
-    if not is_booted(request, cfg, commands):
+    if (kind not in SIMULATOR_UI_ACTIONS or kind == "waitFor") and not is_booted(request, cfg, commands):
         raise PolicyError("simulator_off", "Launch the leased iOS simulator before sending input.")
+    if kind == "preview":
+        return _simulator_preview(device, action.get("sinceFrameId"), commands)
     if kind == "clipboardCopy":
         argv = [commands.xcrun, "simctl", "pbcopy", device]
     elif kind in {"appearance", "contentSize"}:
@@ -287,6 +292,14 @@ def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
             argv = [str(axe), *arguments, "--udid", device]
     if kind == "waitFor":
         return _wait_for_simulator_ui(argv, action, commands)
+    if kind == "batch":
+        payload = {"snapshotID": action["snapshotId"], "steps": action["steps"]}
+        with tempfile.NamedTemporaryFile(dir=TEMP_ROOT) as source:
+            source.write(json.dumps(payload).encode())
+            source.flush()
+            sensitive = any(step["action"] == "type" for step in action["steps"])
+            return _read_simulator_ui([*argv, "--file", source.name], commands, timeout=70,
+                                      omit_capture=sensitive)
     if kind in SIMULATOR_UI_ACTIONS:
         text = action.get("text")
         return _read_simulator_ui(argv, commands, timeout=25,
@@ -309,7 +322,7 @@ def send_simulator_input(request: dict, cfg, commands: Commands) -> dict:
     return {"ok": True, "log": _check(completed, "Simulator input failed"), "exitCode": 0}
 
 
-def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None):
+def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None, omit_capture=False):
     failure = "observationFailed" if argv[1] == "describe-ui" else "actionOutcomeUnknown"
     try:
         completed = commands.run([argv[0], "--output", "json", *argv[1:]],
@@ -328,7 +341,10 @@ def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None):
             result[key] = {name: value for name, value in data[key].items() if name != "quarantine"}
     if isinstance(data.get("quarantine"), dict):
         result["quarantined"] = True
-    if input_bytes is not None:
+    batch = data.get("batch")
+    if isinstance(batch, dict):
+        result["batch"] = {key: batch[key] for key in ("totalSteps", "completedSteps", "stoppedAt") if key in batch}
+    if input_bytes is not None or omit_capture:
         # A text field's refreshed value can contain credentials.
         result.pop("capture", None)
     if ui["didError"] or completed.returncode:
@@ -342,6 +358,30 @@ def _read_simulator_ui(argv, commands, *, timeout, input_bytes=None):
 
 def _simulator_ui_error(code):
     return {"ok": True, "exitCode": 1, "simulatorUI": {"schemaVersion": 1, "error": {"code": code}}}
+
+
+def _simulator_preview(device, since, commands):
+    with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
+        source = Path(directory) / "screen.png"
+        output = Path(directory) / "preview.jpg"
+        _check(commands.run([commands.xcrun, "simctl", "io", device, "screenshot", str(source)],
+                            timeout=25), "Simulator capture failed")
+        _check(commands.run(["/usr/bin/sips", "--resampleWidth", "720", "-s", "format", "jpeg",
+                             "-s", "formatOptions", "65", str(source), "--out", str(output)],
+                            timeout=15), "Simulator preview encoding failed")
+        fd = os.open(output, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_PREVIEW_BYTES:
+                return _simulator_ui_error("previewTooLarge")
+            raw = stream.read(MAX_PREVIEW_BYTES + 1)
+    if len(raw) > MAX_PREVIEW_BYTES or not (raw.startswith(b"\xff\xd8\xff") and raw.endswith(b"\xff\xd9")):
+        return _simulator_ui_error("invalidPreview")
+    frame_id = hashlib.sha256(raw).hexdigest()
+    frame = {"id": frame_id, "changed": frame_id != since}
+    if frame["changed"]:
+        frame["jpegBase64"] = base64.b64encode(raw).decode()
+    return {"ok": True, "exitCode": 0, "simulatorPreview": frame}
 
 
 def _wait_for_simulator_ui(argv, action, commands):

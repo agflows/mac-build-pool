@@ -40,6 +40,7 @@ CODE_FILES = (
     "worker_cache.py",
     "cache_http.py",
     "guest_cache.py",
+    "guest_rpc.py",
     "vm_transport.py",
     "vm_service.py",
     "vm_runner.py",
