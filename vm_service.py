@@ -242,6 +242,7 @@ class BuildTart(OfflineTart):
 
     def input_operation(self, name, request):
         started = time.monotonic()
+        payload = {key: request[key] for key in ('op', 'job_id', 'device_id', 'input_action')}
         with self.lock:
             if name in self.cancelled or name not in self.processes or self.processes[name].poll() is not None:
                 raise LeaseError('simulator lease has stopped')
@@ -250,7 +251,6 @@ class BuildTart(OfflineTart):
                 argv = [self.binary, 'exec', '-i', name, '/usr/bin/sudo', '-n', '-u', 'iosagent',
                         '/usr/bin/python3', '-I', '/Library/ios-worker/guest_rpc.py', '--input-loop']
                 channel = self.inputs[name] = InputPipe(argv, self.env)
-        payload = {key: request[key] for key in ('op', 'job_id', 'device_id', 'input_action')}
         try:
             reply = channel.exchange(payload, timeout=110)
         except (EOFError, ValueError, OSError, TimeoutError):
@@ -355,7 +355,8 @@ class Service:
                 return {'ok':True,'booted':False} if op=='booted' else {'ok':True,'log':'simulator is off'}
             # Boot admission is performed by the broker. A direct private
             # controller caller remains the trusted broker account, not a job.
-            self.controller.start(lease)
+            if op != 'input':
+                self.controller.start(lease)
             vm = self.controller.require_active(lease)
             with self.controller.lock:
                 active = self.controller._authorized(lease)

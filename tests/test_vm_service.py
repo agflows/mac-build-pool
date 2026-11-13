@@ -79,6 +79,12 @@ class VMServiceTest(unittest.TestCase):
         self.service.dispatch({'op':'shutdown','lease_id':LEASE,'device_id':WORKER})
         self.backend.start.assert_not_called()
 
+    def test_input_requires_an_already_active_vm(self):
+        self.reserve()
+        with self.assertRaises(LeaseError):
+            self.service.dispatch({'op': 'input', 'lease_id': LEASE, 'device_id': WORKER})
+        self.backend.start.assert_not_called()
+
     def test_lease_device_mapping_and_one_ingest_per_revision(self):
         self.reserve()
         payload={'op':'prepare','lease_id':LEASE,'device_id':WORKER,'revision_id':'rev1','source_base64':'eA=='}

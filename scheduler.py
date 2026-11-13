@@ -312,7 +312,10 @@ class Scheduler:
                     raise PolicyError("request_conflict", "This request ID already names another action.")
                 job = self.jobs[job_id]
             else:
-                if self._session_ready(session_id) != "ready":
+                ready = self._session_ready(session_id)
+                if ready == "failed":
+                    raise PolicyError("session_unavailable", "The simulator session failed to start.")
+                if ready != "ready":
                     raise PolicyError("session_busy", "The simulator session is still starting.")
                 if len(self._input_receipts) >= 2048:
                     raise PolicyError("interaction_limit", "Start a new lease to submit further interactions.")

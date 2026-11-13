@@ -158,6 +158,7 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
         platforms=getattr(getattr(scheduler.runner,'worker',None),'device_platforms',{})
         lease=scheduler.lease or {}
         return 200, {"ok": True, "executionMode": mode, "executorInstalled": installed,
+                     "simulatorInteract": vm_backend and installed,
                      "securityBoundary": "unix-account" if mode == "native-user" else ('macOS-vm' if vm_backend else "external-vm-controller-required"),
                      "networkIsolationVerified": bool(vm_backend and installed and scheduler.runner.verified()),
                      "remoteTrial": app.trial_peer is not None,
@@ -250,6 +251,8 @@ def dispatch(app: App, method: str, segments: list[str], body: bytes, content_ty
             data = read_json(body)
             if set(data) != {"requestId", "input"}:
                 raise PolicyError("invalid_body", "Expected requestId and input.")
+            if not getattr(scheduler.runner, "vm_backend", False) and getattr(scheduler.runner, "execution_mode", None):
+                raise PolicyError("isolation_required", "This interface requires the isolated simulator controller.")
             simulator_input(data["input"])
             job = scheduler.interact(session_id, data["input"], data["requestId"])
             view = job_view(job)
@@ -425,7 +428,7 @@ def status_for(exc: PolicyError) -> int:
         return 507
     if exc.code == "cache_miss":
         return 404
-    if exc.code in {"session_busy", "request_conflict"}:
+    if exc.code in {"session_busy", "session_unavailable", "request_conflict"}:
         return 409
     if exc.code == "interaction_limit":
         return 429
