@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import base64
 import stat
 import sys
 import tempfile
@@ -60,6 +61,15 @@ class CliTest(unittest.TestCase):
 
     def test_bearer_client_refuses_redirects(self):
         self.assertIsNone(cli.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.test"))
+
+    def test_preview_writes_image_and_reports_frame_id_without_dumping_bytes(self):
+        raw = b"\xff\xd8\xfffixture\xff\xd9"
+        frame = {"id": "frame", "changed": True, "jpegBase64": base64.b64encode(raw).decode()}
+        with tempfile.TemporaryDirectory() as directory, patch("sys.stdout", new=io.StringIO()) as output:
+            path = Path(directory) / "preview.jpg"
+            self.assertEqual(cli.save_preview({"status": "succeeded", "simulatorPreview": frame}, path), 0)
+            self.assertEqual(path.read_bytes(), raw)
+            self.assertEqual(json.loads(output.getvalue()), {"frameId": "frame", "changed": True})
 
 
 if __name__ == "__main__":

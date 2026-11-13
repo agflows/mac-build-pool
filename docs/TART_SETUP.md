@@ -88,7 +88,7 @@ python3 cli.py input SESSION '{"action":"tapMatching","identifier":"signIn.conti
 python3 cli.py input SESSION '{"action":"waitFor","condition":"settled","timeout":8}'
 python3 cli.py input SESSION '{"action":"waitFor","condition":"keyboardVisible","timeout":8}'
 python3 cli.py input SESSION - < action.json
-python3 cli.py input SESSION '{"action":"preview"}'
+python3 cli.py input SESSION '{"action":"preview"}' --output preview.jpg
 ```
 
 Use the returned snapshot for the next action. If an action returns

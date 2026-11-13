@@ -8,6 +8,7 @@ token. The token is never printed.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import stat
@@ -74,7 +75,7 @@ def print_json(raw: bytes) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def wait_job(url: str, token: str, job_id: str, timeout: float = 3600) -> dict:
+def wait_job(url: str, token: str, job_id: str, timeout: float = 3600, *, show_result=True) -> dict:
     deadline = time.monotonic() + timeout
     last_renewal = 0.0
     while time.monotonic() < deadline:
@@ -91,7 +92,8 @@ def wait_job(url: str, token: str, job_id: str, timeout: float = 3600) -> dict:
                 raise SystemExit('Lease renewal failed; the VM will stop at expiry.')
             last_renewal=time.monotonic()
         if payload.get("status") in {"succeeded", "failed", "waiting_for_approval"}:
-            print_json(raw)
+            if show_result:
+                print_json(raw)
             if payload.get("status") == "failed":
                 log_status, log_raw = call(url, token, "GET", "/v1/jobs/" + job_id + "/logs")
                 if log_status == 200:
@@ -101,6 +103,21 @@ def wait_job(url: str, token: str, job_id: str, timeout: float = 3600) -> dict:
             return payload
         time.sleep(1)
     raise SystemExit("Job wait timed out; job may still be running. Check status before retrying.")
+
+
+def save_preview(job, output):
+    frame = job.get("simulatorPreview")
+    if job.get("status") != "succeeded" or not isinstance(frame, dict):
+        print(json.dumps(job))
+        return 1
+    if frame.get("changed"):
+        raw = base64.b64decode(frame["jpegBase64"], validate=True)
+        if len(raw) > 512 * 1024 or not (raw.startswith(b"\xff\xd8\xff") and raw.endswith(b"\xff\xd9")):
+            raise SystemExit("Invalid JPEG preview.")
+        with output.open("xb") as stream:
+            stream.write(raw)
+    print(json.dumps({"frameId": frame["id"], "changed": frame["changed"]}))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -154,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     simulator.add_argument("session")
     simulator.add_argument("action", help='JSON action, or - to read JSON from standard input')
     simulator.add_argument("--request-id", help="Reuse this ID to recover an interaction after a disconnect.")
+    simulator.add_argument("--output", type=Path, help="Save a preview as JPEG.")
     status = sub.add_parser("status")
     status.add_argument("job")
     logs = sub.add_parser("logs")
@@ -236,11 +254,15 @@ def main(argv: list[str]) -> int:
             data = {"requestId": request_id, "input": json.loads(action)}
         except ValueError:
             raise SystemExit("Simulator input must be valid JSON.") from None
+        if args.output and (not isinstance(data["input"], dict) or data["input"].get("action") != "preview"):
+            raise SystemExit("--output requires the preview action.")
         try:
             status, raw = call(args.url, token, "POST", f"/v1/sessions/{args.session}/interact", json.dumps(data).encode())
         except (OSError, TimeoutError):
             raise SystemExit(f"Interaction connection lost. Recover with --request-id {request_id}.") from None
         if status == 200:
+            if args.output:
+                return save_preview(json.loads(raw), args.output)
             job = print_json(raw)
             if "simulatorUI" in job or "simulatorPreview" in job or not job.get("jobId"):
                 return 0 if job.get("status") == "succeeded" else 1
@@ -255,7 +277,9 @@ def main(argv: list[str]) -> int:
         payload = print_json(raw)
         if status != 202:
             return 1
-        job = wait_job(args.url, token, payload["jobId"])
+        job = wait_job(args.url, token, payload["jobId"], show_result=not args.output)
+        if args.output:
+            return save_preview(job, args.output)
         if "simulatorUI" in job:
             return 0 if job.get("status") == "succeeded" else 1
         status, raw = call(args.url, token, "GET", f"/v1/jobs/{payload['jobId']}/logs")
