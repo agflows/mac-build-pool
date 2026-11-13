@@ -185,6 +185,30 @@ class SchedulerTest(unittest.TestCase):
         sample = MemorySample(PRESSURE_URGENT, 0, 0)
         self.assertEqual(self.scheduler._admit(job, sample, None), "wait")
 
+    def test_running_tart_guest_launches_at_warning_and_records_a_notice(self):
+        lease = self._lease()
+        job, _ = self.scheduler.submit_launch(self._ready(), None, lease)
+        self.runner.vm_backend = True
+        self.runner.vm_started = lambda: True
+        self.memory.sample = MemorySample(PRESSURE_WARNING, 0, 0)
+        self.scheduler.step()
+        self._wait_idle(job.id)
+        self.assertEqual(self.scheduler.get(job.id).status, "succeeded")
+        self.assertTrue(self.scheduler.get(job.id).approved)
+        self.assertEqual(self.scheduler.lease["memoryWarningJobId"], job.id)
+
+    def test_warning_still_holds_a_fresh_tart_guest_or_active_paging(self):
+        lease = self._lease()
+        job, _ = self.scheduler.submit_launch(self._ready(), None, lease)
+        self.runner.vm_backend = True
+        self.runner.vm_started = lambda: False
+        before = MemorySample(PRESSURE_WARNING, 0, 0)
+        self.assertEqual(self.scheduler._admit(job, before, None), "wait")
+        self.runner.vm_started = lambda: True
+        paging = MemorySample(PRESSURE_WARNING, 0, 256)
+        self.assertEqual(self.scheduler._admit(job, paging, before), "wait")
+        self.assertNotIn("memoryWarningJobId", self.scheduler.lease)
+
     def test_small_swap_delta_still_boots(self) -> None:
         self.memory.sample = MemorySample(PRESSURE_NORMAL, 1000, 1000)
         self.scheduler.step()

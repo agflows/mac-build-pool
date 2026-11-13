@@ -31,6 +31,10 @@ The Tart broker runs one job at a time. The controller shuts down and verifies
 all guest simulators before preparation or compilation. A build with
 `bootSimulator` enabled queues a separate simulator boot after it succeeds.
 Warning pressure requires owner resource approval before starting the guest.
+In an already-running guest, a simulator launch proceeds at warning pressure
+when the host is not actively paging. The menu app posts a macOS notification
+with Stop Session when notifications are allowed. That action releases the
+lease identified by the notification and discards its guest.
 Urgent pressure stops this guest without touching personal apps or simulators.
 Builds have a 45-minute deadline, including Xcode scheme discovery. A timed-out
 command returns its bounded diagnostic output before the controller reaps its guest.

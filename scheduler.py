@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from containment import DISK_BUDGET, LOG_CAP, MAX_ARTIFACT_BYTES, copy_regular_file
 from runner import WorkerFailure
-from memory import PRESSURE_URGENT, MemorySample, boot_needs_approval, build_needs_approval
+from memory import PRESSURE_URGENT, PRESSURE_WARNING, MemorySample, boot_needs_approval, build_needs_approval, swap_is_active
 from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_configuration, require_bool, require_recipe, require_public_env
 
 Clock = Callable[[], float]
@@ -412,10 +412,12 @@ class Scheduler:
                 sys.stderr.write("idle shutdown failed: " + exc.__class__.__name__ + "\n")
 
     def _admit(self, job: Job, sample: MemorySample, previous: Optional[MemorySample]) -> str:
+        vm_running = False
         if getattr(self.runner, "vm_backend", False) and job.kind != "ingest":
             if sample.pressure_level >= PRESSURE_URGENT:
                 return "wait"
-            if not self.runner.vm_started() and boot_needs_approval(previous, sample, job.approved):
+            vm_running = self.runner.vm_started()
+            if not vm_running and boot_needs_approval(previous, sample, job.approved):
                 return "wait"
         if job.kind in ("prepare", "build", "launch", "uitest"):
             revision = self.revisions.get(job.revision_id or "")
@@ -456,7 +458,13 @@ class Scheduler:
             if ready != "ready":
                 return "skip"
         if self._needs_boot(job) and boot_needs_approval(previous, sample, job.approved):
-            return "wait"
+            if (not vm_running or job.kind not in {"launch", "boot"}
+                    or sample.pressure_level != PRESSURE_WARNING or swap_is_active(previous, sample)):
+                return "wait"
+            # The already-running guest also uses an approval flag for simulator boot.
+            # Keep this grant with the job and retain the notice until the lease ends.
+            job.approved = True
+            self.lease["memoryWarningJobId"] = job.id
         if job.kind in ("prepare", "build", "uitest") and build_needs_approval(previous, sample, job.approved):
             return "wait"
         return "allow"

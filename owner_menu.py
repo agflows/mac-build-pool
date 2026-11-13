@@ -93,6 +93,8 @@ def snapshot(scheduler):
             'leaseId': lease.get('id') if active else None,
         }
         if active:
+            if warning := lease.get('memoryWarningJobId'):
+                status['memoryWarningJobId'] = warning
             waiting = next((job for job in scheduler.jobs.values()
                             if job.lease_id == lease['id'] and job.status == 'waiting_for_approval'), None)
             if waiting is not None:
