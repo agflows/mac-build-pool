@@ -184,9 +184,11 @@ def main():
             guest(['/usr/bin/sudo','-n','/bin/mkdir','-p',axe])
             guest(['/usr/bin/sudo','-n','/usr/bin/tar','-xzf','-','-C',axe],data=args.axe.read_bytes())
             guest(['/usr/bin/sudo','-n','/usr/sbin/chown','-R','root:wheel',axe])
-            guest(['/usr/bin/sudo','-n','/usr/bin/find','-P',axe,'!','-type','l','-exec','/bin/chmod','go-w','{}','+'])
+            guest(['/usr/bin/sudo','-n','/usr/bin/find','-P',axe,'!','-type','l','-exec','/bin/chmod','a+rX,go-w','{}','+'])
             guest(['/usr/bin/sudo','-n','/usr/bin/codesign','--force','--sign','-',axe+'/axe'])
-            guest(['/usr/bin/sudo','-n','-u','iosagent',axe+'/axe','--version'])
+            guest(['/usr/bin/sudo','-n','-u','iosagent','/usr/bin/python3','-I','-c',
+                   'import os,sys;os.chdir("/private/tmp");os.execv(sys.argv[1],sys.argv[1:])',
+                   axe+'/axe','--version'])
             save_progress('axe')
         if args.flutter:
             cfg['toolchain']['flutter_sdk']='/Library/ios-worker/toolchains/flutter'
