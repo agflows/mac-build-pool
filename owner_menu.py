@@ -92,6 +92,12 @@ def snapshot(scheduler):
             'sessionName': (label or f'Session {lease["id"][:8]}') if active else None,
             'leaseId': lease.get('id') if active else None,
         }
+        if active:
+            waiting = next((job for job in scheduler.jobs.values()
+                            if job.lease_id == lease['id'] and job.status == 'waiting_for_approval'), None)
+            if waiting is not None:
+                status['waitingJobId'] = waiting.id
+                status['waitingJobKind'] = waiting.kind
     try:
         meter = usage(broker_disk_paths())
         vm = scheduler.runner._call({'op': 'usage'}, timeout=15)
@@ -157,6 +163,14 @@ def start(scheduler, *, validation, instructions):
                             scheduler.release_lease(request['leaseId'])
                             last_status = None
                             response = {'ok': True}
+                        elif isinstance(request, dict) and set(request) == {'op', 'leaseId', 'jobId'} and request['op'] == 'approve':
+                            try:
+                                scheduler.approve_waiting_job(request['leaseId'], request['jobId'])
+                            except (KeyError, PolicyError):
+                                response = {'ok': False}
+                            else:
+                                response = {'ok': True}
+                            last_status = None
                         else:
                             response = {'ok': False}
                         connection.sendall(json.dumps(response).encode() + b'\n')

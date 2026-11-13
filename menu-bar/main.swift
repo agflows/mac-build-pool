@@ -6,6 +6,8 @@ private struct OwnerReply: Decodable {
     let state: String?
     let sessionName: String?
     let leaseId: String?
+    let waitingJobId: String?
+    let waitingJobKind: String?
     let diskBytes: Int64?
     let memoryBytes: Int64?
     let memoryMetric: String?
@@ -21,11 +23,12 @@ private func menuMemoryFootprint() -> Int64? {
     return Int64(exactly: usage.ri_phys_footprint)
 }
 
-private func request(_ operation: String, lease: String? = nil) -> OwnerReply? {
+private func request(_ operation: String, lease: String? = nil, job: String? = nil) -> OwnerReply? {
     guard let broker = getpwnam("iosbroker") else { return nil }
     let brokerUID = broker.pointee.pw_uid
     var body = ["op": operation]
     if let lease { body["leaseId"] = lease }
+    if let job { body["jobId"] = job }
     guard var data = try? JSONEncoder().encode(body) else { return nil }
     data.append(10)
     for name in ["public", "validation"] {
@@ -79,8 +82,10 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let disk = NSMenuItem()
     private let memory = NSMenuItem()
     private lazy var end = NSMenuItem(title: "End Session", action: #selector(endSession), keyEquivalent: "")
+    private lazy var approve = NSMenuItem(title: "Approve Waiting Job", action: #selector(approveJob), keyEquivalent: "")
     private lazy var copy = NSMenuItem(title: "Copy Agent Instructions", action: #selector(copyAgentInstructions), keyEquivalent: "")
     private var lease: String?
+    private var waitingJob: String?
     private var busy = false
     private var timer: Timer?
 
@@ -96,6 +101,8 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         copy.target = self
         menu.addItem(copy)
+        approve.target = self
+        menu.addItem(approve)
         end.target = self
         menu.addItem(end)
         let quit = NSMenuItem(title: "Quit Mac Build Pool", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -115,6 +122,15 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let status = reply?.state ?? "Worker offline"
         state.title = status
         lease = reply?.leaseId
+        waitingJob = reply?.waitingJobId
+        approve.isHidden = waitingJob == nil
+        approve.isEnabled = waitingJob != nil && lease != nil && !busy
+        switch reply?.waitingJobKind {
+        case "launch", "boot": approve.title = "Approve Simulator Launch"
+        case "vm_start": approve.title = "Approve VM Startup"
+        case "build": approve.title = "Approve Build"
+        default: approve.title = "Approve Waiting Job"
+        }
         session.title = reply?.sessionName ?? "No active session"
         disk.title = "Disk  " + format(reply?.diskBytes, style: .file)
         if reply?.memoryMetric == "footprint", let workerBytes = reply?.memoryBytes,
@@ -190,6 +206,24 @@ final class BuildPoolMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     return
                 }
                 self?.refresh()
+            }
+        }
+    }
+
+    @objc private func approveJob() {
+        guard let lease, let waitingJob, !busy else { return }
+        busy = true
+        approve.isEnabled = false
+        end.isEnabled = false
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let reply = request("approve", lease: lease, job: waitingJob)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.busy = false
+                if reply?.ok != true {
+                    self.state.title = "Job approval unavailable"
+                }
+                self.refresh()
             }
         }
     }

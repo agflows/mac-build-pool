@@ -159,6 +159,32 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(self.scheduler.get(job.id).status, "waiting_for_approval")
         self.assertEqual(self.runner.started, [])
 
+    def test_local_owner_can_approve_only_the_waiting_job_for_the_active_lease(self):
+        self.memory.sample = MemorySample(PRESSURE_WARNING, 0, 0)
+        lease = self._lease()
+        job, _ = self.scheduler.submit_launch(self._ready(), None, lease)
+        with self.assertRaises(PolicyError):
+            self.scheduler.approve_waiting_job(lease, job.id)
+        self.scheduler.step()
+        with self.assertRaises(PolicyError):
+            self.scheduler.approve_waiting_job("wronglease", job.id)
+        self.memory.sample = MemorySample(PRESSURE_URGENT, 0, 0)
+        with self.assertRaises(PolicyError):
+            self.scheduler.approve_waiting_job(lease, job.id)
+        self.memory.sample = MemorySample(PRESSURE_WARNING, 0, 0)
+        self.scheduler.approve_waiting_job(lease, job.id)
+        self.scheduler.step()
+        self._wait_idle(job.id)
+        self.assertEqual(self.scheduler.get(job.id).status, "succeeded")
+
+    def test_tart_admission_holds_approved_launch_at_urgent_pressure(self):
+        lease = self._lease()
+        job, _ = self.scheduler.submit_launch(self._ready(), None, lease)
+        self.runner.vm_backend = True
+        job.approved = True
+        sample = MemorySample(PRESSURE_URGENT, 0, 0)
+        self.assertEqual(self.scheduler._admit(job, sample, None), "wait")
+
     def test_small_swap_delta_still_boots(self) -> None:
         self.memory.sample = MemorySample(PRESSURE_NORMAL, 1000, 1000)
         self.scheduler.step()

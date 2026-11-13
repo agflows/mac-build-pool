@@ -56,9 +56,12 @@ Run `scripts/make-menu-app.sh`, then open the app it prints. It has a single
 menu bar icon with the worker state, current session name, disk and memory
 usage, End Session, and Quit. Set a name with `cli.py lease --name`.
 End Session releases the entire leased guest. Quit closes the menu app.
+When a job is waiting for memory approval, the owner can approve that job
+from the menu. The approval applies to the selected job in the current
+lease. Urgent memory pressure still holds new work and stops the guest.
 
 The local control socket accepts the configured owner's macOS UID and
-exposes status, release, and Copy Agent Instructions. The copy action reads
+exposes status, job approval, release, and Copy Agent Instructions. The copy action reads
 the public agent token on demand and copies it with the Tailscale URL and
 current remote readiness. It does not include the operator or validation
 credentials. Total memory adds the menu app's macOS memory footprint to the

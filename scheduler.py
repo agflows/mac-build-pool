@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from containment import DISK_BUDGET, LOG_CAP, MAX_ARTIFACT_BYTES, copy_regular_file
 from runner import WorkerFailure
-from memory import MemorySample, boot_needs_approval, build_needs_approval
+from memory import PRESSURE_URGENT, MemorySample, boot_needs_approval, build_needs_approval
 from policy import PolicyError, check_device, require_id, require_scheme, require_under, require_configuration, require_bool, require_recipe, require_public_env
 
 Clock = Callable[[], float]
@@ -312,6 +312,18 @@ class Scheduler:
         self._wake.set()
         return job
 
+    def approve_waiting_job(self, lease_id: str, job_id: str) -> None:
+        if self.memory().pressure_level >= PRESSURE_URGENT:
+            raise PolicyError("memory_pressure", "Wait for urgent host memory pressure to clear.")
+        with self._lock:
+            self._require_lease_locked(lease_id)
+            job = self._job_locked(job_id)
+            if job.lease_id != lease_id or job.status != "waiting_for_approval":
+                raise PolicyError("job_not_waiting", "The job is no longer waiting for approval.")
+            job.approved = True
+            job.status = "queued"
+        self._wake.set()
+
     def get(self, job_id: str) -> Job:
         with self._lock:
             return self._copy(self._job_locked(job_id))
@@ -400,9 +412,11 @@ class Scheduler:
                 sys.stderr.write("idle shutdown failed: " + exc.__class__.__name__ + "\n")
 
     def _admit(self, job: Job, sample: MemorySample, previous: Optional[MemorySample]) -> str:
-        if (getattr(self.runner,'vm_backend',False) and job.kind!='ingest'
-                and not self.runner.vm_started() and boot_needs_approval(previous,sample,job.approved)):
-            return 'wait'
+        if getattr(self.runner, "vm_backend", False) and job.kind != "ingest":
+            if sample.pressure_level >= PRESSURE_URGENT:
+                return "wait"
+            if not self.runner.vm_started() and boot_needs_approval(previous, sample, job.approved):
+                return "wait"
         if job.kind in ("prepare", "build", "launch", "uitest"):
             revision = self.revisions.get(job.revision_id or "")
             if revision is None:
