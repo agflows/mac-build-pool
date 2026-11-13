@@ -126,7 +126,10 @@ class ContainmentTest(unittest.TestCase):
     def test_rlimit_refusal_does_not_abort(self) -> None:
         root = Path(__file__).resolve().parents[1]
         completed = subprocess.run(
-            ["/usr/bin/python3", "-c", "import containment; containment.apply_rlimits(); print('ok')"],
+            ["/usr/bin/python3", "-c",
+             "import containment, os; containment.apply_rlimits(); "
+             "first = os.getpriority(os.PRIO_PROCESS, 0); containment.apply_rlimits(); "
+             "assert os.getpriority(os.PRIO_PROCESS, 0) == first; print('ok')"],
             cwd=root,
             capture_output=True,
             text=True,

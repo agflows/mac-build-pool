@@ -149,7 +149,9 @@ def apply_rlimits() -> None:
         except (ValueError, OSError):
             continue
     try:
-        os.nice(5)
+        current = os.getpriority(os.PRIO_PROCESS, 0)
+        if current < 5:
+            os.nice(5 - current)
     except OSError:
         pass
     _jetsam_limit(MEMORY_LIMIT // (1024 * 1024))
