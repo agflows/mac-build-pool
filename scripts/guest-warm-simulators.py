@@ -42,15 +42,14 @@ def main():
         # Also wait for migration if the paired iPhone launched this device.
         subprocess.run([*SIMCTL, 'bootstatus', device, '-b'], check=True, timeout=1200)
         print(f'Simulator {device} is ready after {time.monotonic() - started:.0f} seconds', flush=True)
-    for device in reversed(devices):
-        if device_states(devices).get(device) != 'Shutdown':
-            subprocess.run([*SIMCTL, 'shutdown', device], check=True, timeout=90)
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        if device_states(devices) == dict.fromkeys(devices, 'Shutdown'):
-            return
-        time.sleep(1)
-    raise SystemExit('The warmed simulators did not shut down.')
+    # Both migrations completed. Ask CoreSimulator to shut down the devices;
+    # the caller then requires a clean macOS shutdown before keeping the image.
+    try:
+        subprocess.run([*SIMCTL, 'shutdown', 'all'], check=True, timeout=180)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        print('CoreSimulator shutdown did not finish. The provisioning guest must shut down cleanly.',
+              file=sys.stderr, flush=True)
+
 
 
 if __name__ == '__main__':

@@ -274,9 +274,11 @@ def main():
             guest(['/usr/bin/sudo','-n','/sbin/shutdown','-h','now'])
         except RuntimeError:
             pass
-        deadline=time.monotonic()+60
+        deadline=time.monotonic()+180
         while backend.processes[vm].poll() is None and time.monotonic()<deadline:
             time.sleep(1)
+        if backend.processes[vm].poll() != 0 or bad_pressure.is_set():
+            raise RuntimeError('Provisioning guest did not shut down cleanly')
         backend.stop(vm)
         backend.call('rename',vm,'worker-base')
         print('Fingerprinting powered-off base image',flush=True)
