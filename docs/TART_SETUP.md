@@ -289,6 +289,26 @@ without compiling and accepted tap, drag, pinch, Home and Lock.
 Both validation leases were released. This was the private Tailscale
 trial, with signing and USB disabled.
 
+On November 13, 2026, the simulator interaction update passed a private,
+loopback-only acceptance run on a fresh 8 GiB clone of the reviewed image.
+The Swift fixture built in job `7dc45861a1504fa3` and launched in
+`a40a138a4f3c49f7`. AXe 2.0.4's checked display discovery failed on this
+runtime because CoreDevice did not report the expected display capabilities.
+The compatible accessibility read and ID-based taps found the email field
+and submitted `simulator+test@example.test`. Repeating the typing request ID
+returned job `5bbf4c62954546e0` in 2 ms without typing again. The fixture
+confirmed exact text delivery, approved HTTPS, and a blocked direct connection.
+The API rejected a caller-supplied UDID and a second lease.
+
+Warm selector taps took 3.2–3.8 seconds, the warm snapshot took 2.1 seconds,
+and the 720-pixel JPEG preview took 4.7 seconds. The first snapshot took
+37.1 seconds. Preview job `bbbc231f58984519` returned 57,651 bytes. After
+Home and Lock, screenshot job `adaebcd8bf1845fb` returned a 3,613,744-byte
+Lock Screen PNG. The client released the test lease and the clone exited.
+This run exercised the private loopback route and the compatible AXe
+backend. Checked-reference actions, watchOS interaction and the regular
+Tailscale endpoint require separate acceptance.
+
 
 Run the unit suite, then record actual Mac image/toolchain/source versions,
 API job IDs and screenshot bytes. Use the real CoupleApp Release build with an
